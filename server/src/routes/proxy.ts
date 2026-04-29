@@ -224,8 +224,31 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   }, 0);
   const estimatedTotal = estimatedInputTokens + (max_tokens ?? 1000);
 
+  // Find requested model if specified
+  let requestedModelDbId: number | undefined;
+  if (parsed.data.model) {
+    const db = getDb();
+    const reqModel = parsed.data.model;
+
+    // Try format: platform/model_id (e.g., 'opencode/gpt-5.5')
+    const slashIdx = reqModel.indexOf('/');
+    if (slashIdx !== -1) {
+      const platform = reqModel.slice(0, slashIdx);
+      const modelId = reqModel.slice(slashIdx + 1);
+      const row = db.prepare('SELECT id FROM models WHERE platform = ? AND model_id = ?').get(platform, modelId) as { id: number } | undefined;
+      if (row) requestedModelDbId = row.id;
+    }
+
+    // Try format: model_id only
+    if (!requestedModelDbId) {
+      const row = db.prepare('SELECT id FROM models WHERE model_id = ?').get(reqModel) as { id: number } | undefined;
+      if (row) requestedModelDbId = row.id;
+    }
+  }
+
   // Sticky session: prefer the same model for multi-turn conversations
-  const preferredModel = getStickyModel(messages);
+  // User's requested model takes precedence over sticky session
+  const preferredModel = requestedModelDbId ?? getStickyModel(messages);
 
   // Retry loop: on 429/rate limit, skip that model+key and try the next one
   const skipKeys = new Set<string>();
