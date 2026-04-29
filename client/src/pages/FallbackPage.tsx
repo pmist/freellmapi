@@ -69,6 +69,8 @@ const platformColors: Record<string, string> = {
   zhipu:       '#06b6d4',
   moonshot:    '#4f46e5',
   minimax:     '#a855f7',
+  opencode:    '#10b981',
+  clod:        '#3b82f6',
 }
 
 function TokenUsageBar({ data }: { data: TokenUsageData }) {

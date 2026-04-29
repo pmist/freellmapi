@@ -23,6 +23,8 @@ const PLATFORMS: { value: Platform; label: string }[] = [
   { value: 'zhipu', label: 'Zhipu AI (Z.ai)' },
   { value: 'moonshot', label: 'Moonshot (Kimi)' },
   { value: 'minimax', label: 'MiniMax' },
+  { value: 'opencode', label: 'OpenCode Zen' },
+  { value: 'clod', label: 'CLōD' },
 ]
 
 const statusDot: Record<string, string> = {

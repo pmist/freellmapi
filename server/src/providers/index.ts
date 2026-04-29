@@ -102,6 +102,13 @@ register(new OpenAICompatProvider({
 // OpenCode Zen - multiple API formats
 register(new OpenCodeZenProvider());
 
+// CLōD - OpenAI-compatible
+register(new OpenAICompatProvider({
+  platform: 'clod',
+  name: 'CLōD',
+  baseUrl: 'https://api.clod.io/v1',
+}));
+
 export function getProvider(platform: Platform): BaseProvider | undefined {
   return providers.get(platform);
 }

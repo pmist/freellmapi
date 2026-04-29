@@ -15,7 +15,8 @@ export type Platform =
   | 'zhipu'
   | 'moonshot'
   | 'minimax'
-  | 'opencode';
+  | 'opencode'
+  | 'clod';
 
 export interface Model {
   id: number;

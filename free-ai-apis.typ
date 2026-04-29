@@ -271,6 +271,8 @@ This report catalogs every major platform offering *ongoing* free API access to 
   [Cohere], [Command R+], [~4M], [1,000 calls/mo, 20 RPM],
   [Cloudflare Workers AI], [Llama 3.1 70B], [~18--45M], [10K neurons/day],
   [Fireworks AI], [Open-source], [~5--10M], [10 RPM (after \$1 credit)],
+  [OpenCode Zen], [Various GPT/Claude], [~10--20M], [Multiple API formats],
+  [CLōD], [DeepSeek V3], [~10M], [Energy routing],
 )
 
 #pagebreak()
