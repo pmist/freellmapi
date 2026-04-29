@@ -5,6 +5,7 @@ import { OpenAICompatProvider } from './openai-compat.js';
 import { CohereProvider } from './cohere.js';
 import { CloudflareProvider } from './cloudflare.js';
 import { HuggingFaceProvider } from './huggingface.js';
+import { OpenCodeZenProvider } from './opencode-zen.js';
 
 const providers = new Map<Platform, BaseProvider>();
 
@@ -97,6 +98,9 @@ register(new OpenAICompatProvider({
   name: 'MiniMax',
   baseUrl: 'https://api.minimax.io/v1',
 }));
+
+// OpenCode Zen - multiple API formats
+register(new OpenCodeZenProvider());
 
 export function getProvider(platform: Platform): BaseProvider | undefined {
   return providers.get(platform);

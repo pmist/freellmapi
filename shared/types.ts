@@ -14,7 +14,8 @@ export type Platform =
   | 'cloudflare'
   | 'zhipu'
   | 'moonshot'
-  | 'minimax';
+  | 'minimax'
+  | 'opencode';
 
 export interface Model {
   id: number;

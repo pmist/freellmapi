@@ -41,6 +41,7 @@ export function initDb(dbPath?: string): Database.Database {
   migrateModelsV4(db);
   migrateModelsV5(db);
   migrateModelsV6(db);
+  migrateModelsV7(db);
   ensureUnifiedKey(db);
 
   console.log(`Database initialized at ${resolvedPath}`);
@@ -647,6 +648,85 @@ function migrateModelsV6(db: Database.Database) {
   ];
   const apply = db.transaction(() => {
     for (const a of additions) insert.run(...a);
+    const missing = db.prepare(`
+      SELECT m.id FROM models m
+      LEFT JOIN fallback_config f ON m.id = f.model_db_id
+      WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
+    `).all() as { id: number }[];
+    if (missing.length > 0) {
+      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
+      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+    }
+  });
+  apply();
+}
+
+/**
+ * V7: Add OpenCode Zen models. All 35+ models from the Zen API.
+ * Uses separate endpoint types: responses (GPT), messages (Claude), gemini, chat (others).
+ */
+function migrateModelsV7(db: Database.Database) {
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const additions: Array<[string, string, string, number, number, string, number | null, number | null, number | null, number | null, string, number | null]> = [
+    // GPT models via Responses API (intelligence rank 1-20)
+    ['opencode', 'gpt-5.5', 'GPT 5.5', 1, 5, 'Frontier', null, null, null, null, '', 272000],
+    ['opencode', 'gpt-5.5-pro', 'GPT 5.5 Pro', 2, 7, 'Frontier', null, null, null, null, '', 272000],
+    ['opencode', 'gpt-5.4', 'GPT 5.4', 3, 5, 'Frontier', null, null, null, null, '', 272000],
+    ['opencode', 'gpt-5.4-pro', 'GPT 5.4 Pro', 4, 7, 'Frontier', null, null, null, null, '', 272000],
+    ['opencode', 'gpt-5.4-mini', 'GPT 5.4 Mini', 15, 2, 'Medium', null, null, null, null, '', 272000],
+    ['opencode', 'gpt-5.4-nano', 'GPT 5.4 Nano', 20, 1, 'Small', null, null, null, null, '', 272000],
+    ['opencode', 'gpt-5.3-codex', 'GPT 5.3 Codex', 5, 6, 'Frontier', null, null, null, null, '', 131072],
+    ['opencode', 'gpt-5.3-codex-spark', 'GPT 5.3 Codex Spark', 8, 4, 'Large', null, null, null, null, '', 131072],
+    ['opencode', 'gpt-5.2', 'GPT 5.2', 10, 5, 'Large', null, null, null, null, '', 131072],
+    ['opencode', 'gpt-5.2-codex', 'GPT 5.2 Codex', 6, 6, 'Large', null, null, null, null, '', 131072],
+    ['opencode', 'gpt-5.1', 'GPT 5.1', 12, 5, 'Large', null, null, null, null, '', 131072],
+    ['opencode', 'gpt-5.1-codex', 'GPT 5.1 Codex', 9, 6, 'Large', null, null, null, null, '', 131072],
+    ['opencode', 'gpt-5.1-codex-max', 'GPT 5.1 Codex Max', 7, 8, 'Large', null, null, null, null, '', 131072],
+    ['opencode', 'gpt-5.1-codex-mini', 'GPT 5.1 Codex Mini', 18, 3, 'Medium', null, null, null, null, '', 131072],
+    ['opencode', 'gpt-5', 'GPT 5', 14, 5, 'Large', null, null, null, null, '', 131072],
+    ['opencode', 'gpt-5-codex', 'GPT 5 Codex', 11, 6, 'Large', null, null, null, null, '', 131072],
+    ['opencode', 'gpt-5-nano', 'GPT 5 Nano', 25, 1, 'Small', null, null, null, null, '', 131072],
+
+    // Claude models via Messages API
+    ['opencode', 'claude-opus-4-7', 'Claude Opus 4.7', 3, 8, 'Frontier', null, null, null, null, '', 200000],
+    ['opencode', 'claude-opus-4-6', 'Claude Opus 4.6', 4, 8, 'Frontier', null, null, null, null, '', 200000],
+    ['opencode', 'claude-opus-4-5', 'Claude Opus 4.5', 5, 8, 'Frontier', null, null, null, null, '', 200000],
+    ['opencode', 'claude-opus-4-1', 'Claude Opus 4.1', 6, 9, 'Frontier', null, null, null, null, '', 200000],
+    ['opencode', 'claude-sonnet-4-6', 'Claude Sonnet 4.6', 8, 7, 'Large', null, null, null, null, '', 200000],
+    ['opencode', 'claude-sonnet-4-5', 'Claude Sonnet 4.5', 9, 7, 'Large', null, null, null, null, '', 200000],
+    ['opencode', 'claude-sonnet-4', 'Claude Sonnet 4', 12, 7, 'Large', null, null, null, null, '', 200000],
+    ['opencode', 'claude-haiku-4-5', 'Claude Haiku 4.5', 22, 4, 'Medium', null, null, null, null, '', 200000],
+    ['opencode', 'claude-3-5-haiku', 'Claude 3.5 Haiku', 24, 3, 'Medium', null, null, null, null, '', 200000],
+
+    // Gemini models via Gemini API
+    ['opencode', 'gemini-3.1-pro', 'Gemini 3.1 Pro', 7, 6, 'Frontier', null, null, null, null, '', 1048576],
+    ['opencode', 'gemini-3-flash', 'Gemini 3 Flash', 16, 3, 'Large', null, null, null, null, '', 1048576],
+
+    // OpenAI-compatible models via Chat Completions API
+    ['opencode', 'qwen3.6-plus', 'Qwen 3.6 Plus', 10, 4, 'Large', null, null, null, null, '', 131072],
+    ['opencode', 'qwen3.5-plus', 'Qwen 3.5 Plus', 13, 4, 'Large', null, null, null, null, '', 131072],
+    ['opencode', 'minimax-m2.7', 'MiniMax M2.7', 14, 4, 'Large', null, null, null, null, '', 131072],
+    ['opencode', 'minimax-m2.5', 'MiniMax M2.5', 15, 4, 'Large', null, null, null, null, '', 196608],
+    ['opencode', 'minimax-m2.5-free', 'MiniMax M2.5 (free)', 16, 4, 'Large', null, null, null, null, '', 196608],
+    ['opencode', 'glm-5.1', 'GLM 5.1', 17, 5, 'Large', null, null, null, null, '', 131072],
+    ['opencode', 'glm-5', 'GLM 5', 19, 5, 'Large', null, null, null, null, '', 131072],
+    ['opencode', 'kimi-k2.5', 'Kimi K2.5', 11, 6, 'Large', null, null, null, null, '', 131072],
+    ['opencode', 'kimi-k2.6', 'Kimi K2.6', 9, 6, 'Large', null, null, null, null, '', 131072],
+    ['opencode', 'big-pickle', 'Big Pickle (free)', 30, 2, 'Medium', null, null, null, null, '', 131072],
+    ['opencode', 'ling-2.6-flash', 'Ling 2.6 Flash (free)', 21, 3, 'Medium', null, null, null, null, '', 262144],
+    ['opencode', 'hy3-preview-free', 'Hy3 Preview (free)', 23, 3, 'Medium', null, null, null, null, '', 131072],
+    ['opencode', 'nemotron-3-super-free', 'Nemotron 3 Super (free)', 26, 3, 'Medium', null, null, null, null, '', 262144],
+  ];
+
+  const apply = db.transaction(() => {
+    for (const m of additions) insert.run(...m);
+
+    // Add fallback_config entries for new models
     const missing = db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
