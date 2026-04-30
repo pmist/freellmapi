@@ -13,6 +13,40 @@ interface ZenModelInfo {
   modelId: string;
 }
 
+function sanitizeSchema(schema: any): any {
+  if (Array.isArray(schema)) {
+    return schema.map(sanitizeSchema);
+  } else if (schema !== null && typeof schema === 'object') {
+    const newObj: any = {};
+    for (const key of Object.keys(schema)) {
+      if (key === 'additionalProperties' || key === '$schema') continue;
+      newObj[key] = sanitizeSchema(schema[key]);
+    }
+    return newObj;
+  }
+  return schema;
+}
+
+function toGeminiTools(tools?: any[]): any {
+  if (!tools || tools.length === 0) return undefined;
+  return [{
+    functionDeclarations: tools.map(t => ({
+      name: t.function.name,
+      description: t.function.description,
+      parameters: sanitizeSchema(t.function.parameters),
+    })),
+  }];
+}
+
+function toAnthropicTools(tools?: any[]): any {
+  if (!tools || tools.length === 0) return undefined;
+  return tools.map(t => ({
+    name: t.function.name,
+    description: t.function.description,
+    input_schema: t.function.parameters,
+  }));
+}
+
 export class OpenCodeZenProvider extends BaseProvider {
   readonly platform = 'opencode' as const;
   readonly name = 'OpenCode Zen';
@@ -189,6 +223,7 @@ export class OpenCodeZenProvider extends BaseProvider {
         max_tokens: options?.max_tokens || 4096,
         temperature: options?.temperature,
         top_p: options?.top_p,
+        tools: toAnthropicTools(options?.tools),
       }),
     }, 30000);
 
@@ -223,6 +258,7 @@ export class OpenCodeZenProvider extends BaseProvider {
           maxOutputTokens: options?.max_tokens,
           topP: options?.top_p,
         },
+        tools: toGeminiTools(options?.tools),
       }),
     }, 30000);
 
@@ -436,6 +472,7 @@ export class OpenCodeZenProvider extends BaseProvider {
         max_tokens: options?.max_tokens || 4096,
         temperature: options?.temperature,
         top_p: options?.top_p,
+        tools: toAnthropicTools(options?.tools),
         stream: true,
       }),
     }, 30000);

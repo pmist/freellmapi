@@ -66,6 +66,20 @@ function toGeminiFinishReason(finishReason?: string): string {
   return 'stop';
 }
 
+function sanitizeSchema(schema: any): any {
+  if (Array.isArray(schema)) {
+    return schema.map(sanitizeSchema);
+  } else if (schema !== null && typeof schema === 'object') {
+    const newObj: any = {};
+    for (const key of Object.keys(schema)) {
+      if (key === 'additionalProperties' || key === '$schema') continue;
+      newObj[key] = sanitizeSchema(schema[key]);
+    }
+    return newObj;
+  }
+  return schema;
+}
+
 function toGeminiTools(tools?: ChatToolDefinition[]): Array<{ functionDeclarations: Array<Record<string, unknown>> }> | undefined {
   if (!tools || tools.length === 0) return undefined;
 
@@ -73,7 +87,7 @@ function toGeminiTools(tools?: ChatToolDefinition[]): Array<{ functionDeclaratio
     functionDeclarations: tools.map(t => ({
       name: t.function.name,
       description: t.function.description,
-      parameters: t.function.parameters,
+      parameters: sanitizeSchema(t.function.parameters),
     })),
   }];
 }
