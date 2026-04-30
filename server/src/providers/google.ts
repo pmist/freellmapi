@@ -71,9 +71,11 @@ function sanitizeSchema(schema: any): any {
     return schema.map(sanitizeSchema);
   } else if (schema !== null && typeof schema === 'object') {
     const newObj: any = {};
+    const allowedKeys = ['type', 'format', 'description', 'nullable', 'enum', 'items', 'properties', 'required'];
     for (const key of Object.keys(schema)) {
-      if (key === 'additionalProperties' || key === '$schema') continue;
-      newObj[key] = sanitizeSchema(schema[key]);
+      if (allowedKeys.includes(key)) {
+        newObj[key] = sanitizeSchema(schema[key]);
+      }
     }
     return newObj;
   }
