@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { ChatMessage } from '@freellmapi/shared/types.js';
-import { routeRequest, recordRateLimitHit, recordSuccess, type RouteResult } from '../services/router.js';
+import { routeRequest, routeDynamicRequest, recordRateLimitHit, recordSuccess, type RouteResult } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.js';
 import { getDb, getUnifiedApiKey } from '../db/index.js';
 
@@ -226,23 +226,32 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
 
   // Find requested model if specified
   let requestedModelDbId: number | undefined;
+  let dynamicPlatform: string | undefined;
+  let dynamicModelId: string | undefined;
+
   if (parsed.data.model) {
     const db = getDb();
     const reqModel = parsed.data.model;
 
-    // Try format: platform/model_id (e.g., 'opencode/gpt-5.5')
-    const slashIdx = reqModel.indexOf('/');
-    if (slashIdx !== -1) {
-      const platform = reqModel.slice(0, slashIdx);
-      const modelId = reqModel.slice(slashIdx + 1);
-      const row = db.prepare('SELECT id FROM models WHERE platform = ? AND model_id = ?').get(platform, modelId) as { id: number } | undefined;
-      if (row) requestedModelDbId = row.id;
-    }
-
-    // Try format: model_id only
-    if (!requestedModelDbId) {
-      const row = db.prepare('SELECT id FROM models WHERE model_id = ?').get(reqModel) as { id: number } | undefined;
-      if (row) requestedModelDbId = row.id;
+    // First, try to match the exact model string as model_id (e.g. 'anthropic/claude-3-opus' might be a model_id under openrouter)
+    const exactRow = db.prepare('SELECT id FROM models WHERE model_id = ?').get(reqModel) as { id: number } | undefined;
+    
+    if (exactRow) {
+      requestedModelDbId = exactRow.id;
+    } else {
+      // If exact match fails, try parsing as platform/model_id
+      const slashIdx = reqModel.indexOf('/');
+      if (slashIdx !== -1) {
+        const platform = reqModel.slice(0, slashIdx);
+        const modelId = reqModel.slice(slashIdx + 1);
+        const row = db.prepare('SELECT id FROM models WHERE platform = ? AND model_id = ?').get(platform, modelId) as { id: number } | undefined;
+        if (row) {
+          requestedModelDbId = row.id;
+        } else {
+          dynamicPlatform = platform;
+          dynamicModelId = modelId;
+        }
+      }
     }
   }
 
@@ -257,7 +266,11 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     let route: RouteResult;
     try {
-      route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel);
+      if (dynamicPlatform && dynamicModelId) {
+        route = routeDynamicRequest(dynamicPlatform, dynamicModelId, estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined);
+      } else {
+        route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel);
+      }
     } catch (err: any) {
       // No more models available
       if (lastError) {
@@ -295,6 +308,9 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         for await (const chunk of gen) {
           const text = chunk.choices[0]?.delta?.content ?? '';
           totalOutputTokens += Math.ceil(text.length / 4);
+          if (parsed.data.model) {
+            chunk.model = parsed.data.model;
+          }
           res.write(`data: ${JSON.stringify(chunk)}\n\n`);
         }
 
@@ -311,6 +327,10 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           route.apiKey, messages, route.modelId,
           { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls },
         );
+
+        if (parsed.data.model) {
+          result.model = parsed.data.model;
+        }
 
         const totalTokens = result.usage?.total_tokens ?? 0;
         recordTokens(route.platform, route.modelId, route.keyId, totalTokens);
@@ -333,11 +353,18 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       const latency = Date.now() - start;
       logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message);
 
-      if (isRetryableError(err)) {
+      const isOpencode = route.platform === 'opencode';
+      const shouldRetry = isOpencode || isRetryableError(err);
+
+      if (shouldRetry) {
         // Put this model+key on cooldown and try the next one
         const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
         skipKeys.add(skipId);
-        setCooldown(route.platform, route.modelId, route.keyId, 120_000);
+        
+        // OpenCode models get an 8-hour cooldown on ANY error, others get 2 minutes on retryable errors
+        const cooldownMs = isOpencode ? 8 * 60 * 60 * 1000 : 120_000;
+        setCooldown(route.platform, route.modelId, route.keyId, cooldownMs);
+        
         recordRateLimitHit(route.modelDbId);
         lastError = err;
         console.log(`[Proxy] ${err.message.slice(0, 60)} from ${route.displayName}, falling back (attempt ${attempt + 1}/${MAX_RETRIES})`);

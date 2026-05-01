@@ -17,19 +17,21 @@ export class GroqProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
+    const reqBody = {
+      model: modelId,
+      messages,
+      temperature: options?.temperature,
+      max_tokens: options?.max_tokens,
+      top_p: options?.top_p,
+    };
+
     const res = await this.fetchWithTimeout(`${API_BASE}/chat/completions`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: modelId,
-        messages,
-        temperature: options?.temperature,
-        max_tokens: options?.max_tokens,
-        top_p: options?.top_p,
-      }),
+      body: JSON.stringify(reqBody),
     });
 
     if (!res.ok) {
@@ -37,8 +39,13 @@ export class GroqProvider extends BaseProvider {
       throw new Error(`Groq API error ${res.status}: ${(err as any).error?.message ?? res.statusText}`);
     }
 
-    const data = await res.json() as ChatCompletionResponse;
+    const rawData = await res.json();
+    const data = { ...rawData } as ChatCompletionResponse;
     data._routed_via = { platform: 'groq', model: modelId };
+    data._request_response = {
+      provider_request: reqBody,
+      provider_response: rawData,
+    };
     return data;
   }
 

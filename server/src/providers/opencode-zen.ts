@@ -21,7 +21,15 @@ function sanitizeSchema(schema: any): any {
     const allowedKeys = ['type', 'format', 'description', 'nullable', 'enum', 'items', 'properties', 'required'];
     for (const key of Object.keys(schema)) {
       if (allowedKeys.includes(key)) {
-        newObj[key] = sanitizeSchema(schema[key]);
+        if (key === 'properties' && schema.properties && typeof schema.properties === 'object') {
+          const props: any = {};
+          for (const propName of Object.keys(schema.properties)) {
+            props[propName] = sanitizeSchema(schema.properties[propName]);
+          }
+          newObj.properties = props;
+        } else {
+          newObj[key] = sanitizeSchema(schema[key]);
+        }
       }
     }
     return newObj;
@@ -141,22 +149,24 @@ export class OpenCodeZenProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
+    const reqBody = {
+      model: modelId,
+      messages,
+      temperature: options?.temperature,
+      max_tokens: options?.max_tokens,
+      top_p: options?.top_p,
+      tools: options?.tools,
+      tool_choice: options?.tool_choice,
+      parallel_tool_calls: options?.parallel_tool_calls,
+    };
+
     const res = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: modelId,
-        messages,
-        temperature: options?.temperature,
-        max_tokens: options?.max_tokens,
-        top_p: options?.top_p,
-        tools: options?.tools,
-        tool_choice: options?.tool_choice,
-        parallel_tool_calls: options?.parallel_tool_calls,
-      }),
+      body: JSON.stringify(reqBody),
     }, 30000);
 
     if (!res.ok) {
@@ -164,8 +174,13 @@ export class OpenCodeZenProvider extends BaseProvider {
       throw new Error(`OpenCode Zen API error ${res.status}: ${(err as any).error?.message ?? res.statusText}`);
     }
 
-    const data = await res.json() as ChatCompletionResponse;
+    const rawData = await res.json();
+    const data = { ...rawData } as ChatCompletionResponse;
     data._routed_via = { platform: this.platform, model: modelId };
+    data._request_response = {
+      provider_request: reqBody,
+      provider_response: rawData,
+    };
     return data;
   }
 
@@ -175,21 +190,23 @@ export class OpenCodeZenProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
+    const reqBody = {
+      model: modelId,
+      input: messages,
+      temperature: options?.temperature,
+      max_output_tokens: options?.max_tokens,
+      top_p: options?.top_p,
+      tools: options?.tools,
+      tool_choice: options?.tool_choice,
+    };
+
     const res = await this.fetchWithTimeout(`${this.baseUrl}/responses`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: modelId,
-        input: messages,
-        temperature: options?.temperature,
-        max_output_tokens: options?.max_tokens,
-        top_p: options?.top_p,
-        tools: options?.tools,
-        tool_choice: options?.tool_choice,
-      }),
+      body: JSON.stringify(reqBody),
     }, 30000);
 
     if (!res.ok) {
@@ -198,7 +215,12 @@ export class OpenCodeZenProvider extends BaseProvider {
     }
 
     const data = await res.json();
-    return this.transformResponsesToChatCompletion(data, modelId);
+    const result = this.transformResponsesToChatCompletion(data, modelId);
+    result._request_response = {
+      provider_request: reqBody,
+      provider_response: data,
+    };
+    return result;
   }
 
   private async chatCompletionMessages(
@@ -212,6 +234,15 @@ export class OpenCodeZenProvider extends BaseProvider {
       content: m.content || '',
     }));
 
+    const reqBody = {
+      model: modelId,
+      messages: anthropicMessages,
+      max_tokens: options?.max_tokens || 4096,
+      temperature: options?.temperature,
+      top_p: options?.top_p,
+      tools: toAnthropicTools(options?.tools),
+    };
+
     const res = await this.fetchWithTimeout(`${this.baseUrl}/messages`, {
       method: 'POST',
       headers: {
@@ -219,14 +250,7 @@ export class OpenCodeZenProvider extends BaseProvider {
         'Content-Type': 'application/json',
         'anthropic-version': '2023-06-01',
       },
-      body: JSON.stringify({
-        model: modelId,
-        messages: anthropicMessages,
-        max_tokens: options?.max_tokens || 4096,
-        temperature: options?.temperature,
-        top_p: options?.top_p,
-        tools: toAnthropicTools(options?.tools),
-      }),
+      body: JSON.stringify(reqBody),
     }, 30000);
 
     if (!res.ok) {
@@ -235,7 +259,12 @@ export class OpenCodeZenProvider extends BaseProvider {
     }
 
     const data = await res.json();
-    return this.transformMessagesToChatCompletion(data, modelId);
+    const result = this.transformMessagesToChatCompletion(data, modelId);
+    result._request_response = {
+      provider_request: reqBody,
+      provider_response: data,
+    };
+    return result;
   }
 
   private async chatCompletionGemini(
@@ -244,24 +273,26 @@ export class OpenCodeZenProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
+    const reqBody = {
+      contents: messages.map(m => ({
+        role: m.role === 'user' ? 'user' : 'model',
+        parts: [{ text: m.content || '' }],
+      })),
+      generationConfig: {
+        temperature: options?.temperature,
+        maxOutputTokens: options?.max_tokens,
+        topP: options?.top_p,
+      },
+      tools: toGeminiTools(options?.tools),
+    };
+
     const res = await this.fetchWithTimeout(`${this.baseUrl}/models/${modelId}:generateContent`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        contents: messages.map(m => ({
-          role: m.role === 'user' ? 'user' : 'model',
-          parts: [{ text: m.content || '' }],
-        })),
-        generationConfig: {
-          temperature: options?.temperature,
-          maxOutputTokens: options?.max_tokens,
-          topP: options?.top_p,
-        },
-        tools: toGeminiTools(options?.tools),
-      }),
+      body: JSON.stringify(reqBody),
     }, 30000);
 
     if (!res.ok) {
@@ -270,7 +301,12 @@ export class OpenCodeZenProvider extends BaseProvider {
     }
 
     const data = await res.json();
-    return this.transformGeminiToChatCompletion(data, modelId);
+    const result = this.transformGeminiToChatCompletion(data, modelId);
+    result._request_response = {
+      provider_request: reqBody,
+      provider_response: data,
+    };
+    return result;
   }
 
   private transformResponsesToChatCompletion(data: any, modelId: string): ChatCompletionResponse {

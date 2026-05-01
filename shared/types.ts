@@ -145,6 +145,10 @@ export interface ChatCompletionResponse {
     platform: Platform;
     model: string;
   };
+  _request_response?: {
+    provider_request?: unknown;
+    provider_response?: unknown;
+  };
 }
 
 export interface ChatCompletionChunk {

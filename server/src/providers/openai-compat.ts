@@ -44,6 +44,17 @@ export class OpenAICompatProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
+    const reqBody = {
+      model: modelId,
+      messages,
+      temperature: options?.temperature,
+      max_tokens: options?.max_tokens,
+      top_p: options?.top_p,
+      tools: options?.tools,
+      tool_choice: options?.tool_choice,
+      parallel_tool_calls: options?.parallel_tool_calls,
+    };
+
     const res = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -51,16 +62,7 @@ export class OpenAICompatProvider extends BaseProvider {
         'Content-Type': 'application/json',
         ...this.extraHeaders,
       },
-      body: JSON.stringify({
-        model: modelId,
-        messages,
-        temperature: options?.temperature,
-        max_tokens: options?.max_tokens,
-        top_p: options?.top_p,
-        tools: options?.tools,
-        tool_choice: options?.tool_choice,
-        parallel_tool_calls: options?.parallel_tool_calls,
-      }),
+      body: JSON.stringify(reqBody),
     }, this.timeoutMs);
 
     if (!res.ok) {
@@ -68,8 +70,13 @@ export class OpenAICompatProvider extends BaseProvider {
       throw new Error(`${this.name} API error ${res.status}: ${(err as any).error?.message ?? res.statusText}`);
     }
 
-    const data = await res.json() as ChatCompletionResponse;
+    const rawData = await res.json();
+    const data = { ...rawData } as ChatCompletionResponse;
     data._routed_via = { platform: this.platform, model: modelId };
+    data._request_response = {
+      provider_request: reqBody,
+      provider_response: rawData,
+    };
     return data;
   }
 

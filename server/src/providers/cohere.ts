@@ -41,8 +41,13 @@ export class CohereProvider extends BaseProvider {
       throw new Error(`Cohere API error ${res.status}: ${(err as any).error?.message ?? res.statusText}`);
     }
 
-    const data = await res.json() as ChatCompletionResponse;
+    const rawData = await res.json();
+    const data = { ...rawData } as ChatCompletionResponse;
     data._routed_via = { platform: 'cohere', model: modelId };
+    data._request_response = {
+      provider_request: body,
+      provider_response: rawData,
+    };
     return data;
   }
 

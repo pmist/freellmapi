@@ -5,7 +5,7 @@ import type {
 } from '@freellmapi/shared/types.js';
 import { BaseProvider, type CompletionOptions } from './base.js';
 
-const API_BASE = 'https://router.huggingface.co/fireworks-ai/inference/v1';
+const API_BASE = 'https://router.huggingface.co/v1';
 
 export class HuggingFaceProvider extends BaseProvider {
   readonly platform = 'huggingface' as const;
@@ -18,22 +18,24 @@ export class HuggingFaceProvider extends BaseProvider {
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
     // HF Inference API supports OpenAI-compatible chat endpoint
+    const reqBody = {
+      model: modelId,
+      messages,
+      temperature: options?.temperature,
+      max_tokens: options?.max_tokens,
+      top_p: options?.top_p,
+      tools: options?.tools,
+      tool_choice: options?.tool_choice,
+      parallel_tool_calls: options?.parallel_tool_calls,
+    };
+
     const res = await this.fetchWithTimeout(`${API_BASE}/chat/completions`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: modelId,
-        messages,
-        temperature: options?.temperature,
-        max_tokens: options?.max_tokens,
-        top_p: options?.top_p,
-        tools: options?.tools,
-        tool_choice: options?.tool_choice,
-        parallel_tool_calls: options?.parallel_tool_calls,
-      }),
+      body: JSON.stringify(reqBody),
     });
 
     if (!res.ok) {
@@ -41,8 +43,13 @@ export class HuggingFaceProvider extends BaseProvider {
       throw new Error(`HuggingFace API error ${res.status}: ${(err as any).error ?? res.statusText}`);
     }
 
-    const data = await res.json() as ChatCompletionResponse;
+    const rawData = await res.json();
+    const data = { ...rawData } as ChatCompletionResponse;
     data._routed_via = { platform: 'huggingface', model: modelId };
+    data._request_response = {
+      provider_request: reqBody,
+      provider_response: rawData,
+    };
     return data;
   }
 

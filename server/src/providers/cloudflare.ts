@@ -37,22 +37,24 @@ export class CloudflareProvider extends BaseProvider {
     const { accountId, token } = this.parseKey(apiKey);
     const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/chat/completions`;
 
+    const reqBody = {
+      model: modelId,
+      messages: this.normalizeMessages(messages),
+      temperature: options?.temperature,
+      max_tokens: options?.max_tokens,
+      top_p: options?.top_p,
+      tools: options?.tools,
+      tool_choice: options?.tool_choice,
+      parallel_tool_calls: options?.parallel_tool_calls,
+    };
+
     const res = await this.fetchWithTimeout(url, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: modelId,
-        messages: this.normalizeMessages(messages),
-        temperature: options?.temperature,
-        max_tokens: options?.max_tokens,
-        top_p: options?.top_p,
-        tools: options?.tools,
-        tool_choice: options?.tool_choice,
-        parallel_tool_calls: options?.parallel_tool_calls,
-      }),
+      body: JSON.stringify(reqBody),
     });
 
     if (!res.ok) {
@@ -60,8 +62,13 @@ export class CloudflareProvider extends BaseProvider {
       throw new Error(`Cloudflare API error ${res.status}: ${(err as any).error?.message ?? (err as any).errors?.[0]?.message ?? res.statusText}`);
     }
 
-    const data = await res.json() as ChatCompletionResponse;
+    const rawData = await res.json();
+    const data = { ...rawData } as ChatCompletionResponse;
     data._routed_via = { platform: 'cloudflare', model: modelId };
+    data._request_response = {
+      provider_request: reqBody,
+      provider_response: rawData,
+    };
     return data;
   }
 

@@ -220,3 +220,62 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
   err.status = 429;
   throw err;
 }
+
+/**
+ * Dynamically route a request to a specific platform when the model is not in the DB.
+ */
+export function routeDynamicRequest(platform: string, modelId: string, estimatedTokens = 1000, skipKeys?: Set<string>): RouteResult {
+  const db = getDb();
+  const provider = getProvider(platform as any);
+  
+  if (!provider) {
+    const err = new Error(`Unsupported provider: ${platform}`) as any;
+    err.status = 400;
+    throw err;
+  }
+
+  const keys = db.prepare(
+    'SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status != ?'
+  ).all(platform, 'invalid') as KeyRow[];
+
+  if (keys.length === 0) {
+    const err = new Error(`No valid API keys found for provider: ${platform}`) as any;
+    err.status = 400;
+    throw err;
+  }
+
+  const rrKey = `${platform}:dynamic:${modelId}`;
+  let idx = roundRobinIndex.get(rrKey) ?? 0;
+
+  for (let attempt = 0; attempt < keys.length; attempt++) {
+    const key = keys[idx % keys.length];
+    idx++;
+
+    const skipId = `${platform}:${modelId}:${key.id}`;
+    if (skipKeys?.has(skipId)) continue;
+
+    if (isOnCooldown(platform, modelId, key.id)) continue;
+
+    // For dynamic models, we bypass DB token/RPM limits and rely on the provider to 429 us.
+    roundRobinIndex.set(rrKey, idx);
+
+    const decryptedKey = decrypt(key.encrypted_key, key.iv, key.auth_tag);
+
+    return {
+      provider,
+      modelId,
+      modelDbId: 0, // 0 indicates dynamic model not in DB
+      apiKey: decryptedKey,
+      keyId: key.id,
+      platform,
+      displayName: `${platform}/${modelId} (Dynamic)`,
+    };
+  }
+
+  roundRobinIndex.set(rrKey, idx);
+
+  const err = new Error(`All keys for ${platform} are exhausted or rate-limited.`) as any;
+  err.status = 429;
+  throw err;
+}
+

@@ -74,7 +74,15 @@ function sanitizeSchema(schema: any): any {
     const allowedKeys = ['type', 'format', 'description', 'nullable', 'enum', 'items', 'properties', 'required'];
     for (const key of Object.keys(schema)) {
       if (allowedKeys.includes(key)) {
-        newObj[key] = sanitizeSchema(schema[key]);
+        if (key === 'properties' && schema.properties && typeof schema.properties === 'object') {
+          const props: any = {};
+          for (const propName of Object.keys(schema.properties)) {
+            props[propName] = sanitizeSchema(schema.properties[propName]);
+          }
+          newObj.properties = props;
+        } else {
+          newObj[key] = sanitizeSchema(schema[key]);
+        }
       }
     }
     return newObj;
@@ -283,6 +291,10 @@ export class GoogleProvider extends BaseProvider {
       }],
       usage,
       _routed_via: { platform: 'google', model: modelId },
+      _request_response: {
+        provider_request: body,
+        provider_response: data,
+      },
     };
   }
 
