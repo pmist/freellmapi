@@ -131,7 +131,19 @@ export class OpenAICompatProvider extends BaseProvider {
         const data = trimmed.slice(6);
         if (data === '[DONE]') return;
         try {
-          yield JSON.parse(data) as ChatCompletionChunk;
+          const chunk = JSON.parse(data) as ChatCompletionChunk;
+          // Ensure index in tool_calls for OpenAI streaming compatibility
+          if (chunk.choices) {
+            for (const choice of chunk.choices) {
+              if (choice.delta?.tool_calls) {
+                choice.delta.tool_calls = choice.delta.tool_calls.map((tc, idx) => ({
+                  ...tc,
+                  index: tc.index ?? idx,
+                }));
+              }
+            }
+          }
+          yield chunk;
         } catch {
           // Skip malformed chunks
         }

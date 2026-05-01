@@ -207,6 +207,7 @@ function extractToolCalls(parts: GeminiPart[] | undefined): ChatToolCall[] {
 
     const id = part.functionCall.id ?? `call_${Date.now()}_${fallbackIndex++}`;
     calls.push({
+      index: calls.length,
       id,
       type: 'function',
       function: {

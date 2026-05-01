@@ -74,6 +74,7 @@ export interface ChatToolCallFunction {
 }
 
 export interface ChatToolCall {
+  index?: number;
   id: string;
   type: 'function';
   function: ChatToolCallFunction;
