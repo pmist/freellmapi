@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { RefreshCw, X } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
 import { Button } from '@/components/ui/button'
@@ -124,12 +125,116 @@ function UnifiedKeySection() {
   )
 }
 
+function SyncModelsModal({
+  keyId, platform, onClose, onImported
+}: {
+  keyId: number, platform: string, onClose: () => void, onImported: () => void
+}) {
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+
+  const { data: models, isLoading, error } = useQuery<{id: string, name: string}[]>({
+    queryKey: ['sync-models', keyId],
+    queryFn: () => apiFetch(`/api/keys/${keyId}/models`),
+  })
+
+  const importMutation = useMutation({
+    mutationFn: (modelsToImport: {id: string, name: string}[]) =>
+      apiFetch(`/api/keys/${keyId}/models/import`, {
+        method: 'POST',
+        body: JSON.stringify({ models: modelsToImport })
+      }),
+    onSuccess: () => {
+      onImported()
+      onClose()
+    }
+  })
+
+  const handleToggle = (id: string) => {
+    const next = new Set(selectedIds)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    setSelectedIds(next)
+  }
+
+  const handleImport = () => {
+    if (!models) return
+    const toImport = models.filter(m => selectedIds.has(m.id))
+    importMutation.mutate(toImport)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
+      <div className="w-full max-w-md bg-card border rounded-lg shadow-lg flex flex-col max-h-[85vh]">
+        <div className="flex items-center justify-between p-4 border-b">
+          <h2 className="text-sm font-medium">Sync Models ({platform})</h2>
+          <Button variant="ghost" size="icon" className="size-6 text-muted-foreground" onClick={onClose}>
+            <X className="size-4" />
+          </Button>
+        </div>
+        
+        <div className="flex-1 overflow-auto p-4 space-y-3">
+          {isLoading ? (
+            <p className="text-sm text-muted-foreground">Fetching models from provider...</p>
+          ) : error ? (
+            <p className="text-sm text-destructive">Failed to fetch models.</p>
+          ) : models && models.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No models found or syncing not supported for this provider.</p>
+          ) : (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between mb-2 pb-2 border-b">
+                <span className="text-xs text-muted-foreground">{models?.length} models found</span>
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  className="h-7 text-xs px-2"
+                  onClick={() => {
+                    if (selectedIds.size === models?.length) setSelectedIds(new Set())
+                    else setSelectedIds(new Set(models?.map(m => m.id)))
+                  }}
+                >
+                  {selectedIds.size === models?.length ? 'Deselect All' : 'Select All'}
+                </Button>
+              </div>
+              {models?.map(m => (
+                <label key={m.id} className="flex items-center gap-3 p-2 rounded hover:bg-muted cursor-pointer border border-transparent hover:border-border transition-colors">
+                  <input 
+                    type="checkbox" 
+                    checked={selectedIds.has(m.id)}
+                    onChange={() => handleToggle(m.id)}
+                    className="accent-primary size-4"
+                  />
+                  <div className="flex flex-col">
+                    <span className="text-sm font-medium">{m.name}</span>
+                    <span className="text-[10px] text-muted-foreground font-mono leading-tight">{m.id}</span>
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+        
+        <div className="p-4 border-t flex justify-end gap-2 bg-muted/20">
+          <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
+          <Button 
+            size="sm" 
+            onClick={handleImport} 
+            disabled={selectedIds.size === 0 || importMutation.isPending}
+          >
+            {importMutation.isPending ? 'Importing...' : `Import ${selectedIds.size} Models`}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function KeysPage() {
   const queryClient = useQueryClient()
   const [platform, setPlatform] = useState<Platform | ''>('')
   const [apiKey, setApiKey] = useState('')
   const [accountId, setAccountId] = useState('')
   const [label, setLabel] = useState('')
+  const [syncModalState, setSyncModalState] = useState<{ id: number; platform: string } | null>(null)
 
   const { data: keys = [], isLoading } = useQuery<ApiKey[]>({
     queryKey: ['keys'],
@@ -310,6 +415,10 @@ export default function KeysPage() {
                           <Button variant="ghost" size="xs" onClick={() => checkKey.mutate(k.id)} disabled={checkKey.isPending}>
                             Check
                           </Button>
+                          <Button variant="ghost" size="xs" onClick={() => setSyncModalState({ id: k.id, platform: group.label })}>
+                            <RefreshCw className="size-3 mr-1" />
+                            Sync
+                          </Button>
                           <Button variant="ghost" size="xs" className="text-muted-foreground hover:text-destructive" onClick={() => deleteKey.mutate(k.id)} disabled={deleteKey.isPending}>
                             Remove
                           </Button>
@@ -323,6 +432,18 @@ export default function KeysPage() {
           )}
         </section>
       </div>
+
+      {syncModalState && (
+        <SyncModelsModal
+          keyId={syncModalState.id}
+          platform={syncModalState.platform}
+          onClose={() => setSyncModalState(null)}
+          onImported={() => {
+            queryClient.invalidateQueries({ queryKey: ['fallback'] })
+            queryClient.invalidateQueries({ queryKey: ['keys'] })
+          }}
+        />
+      )}
     </div>
   )
 }

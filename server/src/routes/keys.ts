@@ -3,6 +3,8 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { getDb } from '../db/index.js';
 import { encrypt, decrypt, maskKey } from '../lib/crypto.js';
+import { getProvider } from '../providers/index.js';
+import type { Platform } from '@freellmapi/shared/types.js';
 
 export const keysRouter = Router();
 
@@ -115,4 +117,72 @@ keysRouter.patch('/:id', (req: Request, res: Response) => {
   }
 
   res.json({ success: true, enabled });
+});
+
+// Get available models from the provider
+keysRouter.get('/:id/models', async (req: Request, res: Response) => {
+  const id = parseInt(req.params.id as string, 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: { message: 'Invalid key ID' } });
+    return;
+  }
+
+  const db = getDb();
+  const row = db.prepare('SELECT platform, encrypted_key, iv, auth_tag FROM api_keys WHERE id = ?').get(id) as any;
+  if (!row) {
+    res.status(404).json({ error: { message: 'Key not found' } });
+    return;
+  }
+
+  const provider = getProvider(row.platform as Platform);
+  if (!provider) {
+    res.status(400).json({ error: { message: 'Unsupported platform' } });
+    return;
+  }
+
+  try {
+    const key = decrypt(row.encrypted_key, row.iv, row.auth_tag);
+    const models = await provider.getModels(key);
+    res.json(models);
+  } catch (err: any) {
+    res.status(500).json({ error: { message: err.message || 'Failed to fetch models' } });
+  }
+});
+
+const importModelsSchema = z.object({
+  models: z.array(z.object({
+    id: z.string(),
+    name: z.string()
+  }))
+});
+
+// Import selected models
+keysRouter.post('/:id/models/import', async (req: Request, res: Response) => {
+  const id = parseInt(req.params.id as string, 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: { message: 'Invalid key ID' } });
+    return;
+  }
+
+  const parsed = importModelsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: { message: 'Invalid models payload' } });
+    return;
+  }
+
+  const db = getDb();
+  const row = db.prepare('SELECT platform FROM api_keys WHERE id = ?').get(id) as { platform: string };
+  if (!row) {
+    res.status(404).json({ error: { message: 'Key not found' } });
+    return;
+  }
+
+  try {
+    // Dynamic import to avoid circular dependency issues at the top level
+    const { importModels } = await import('../db/index.js');
+    importModels(db, row.platform, parsed.data.models);
+    res.json({ success: true, count: parsed.data.models.length });
+  } catch (err: any) {
+    res.status(500).json({ error: { message: err.message || 'Failed to import models' } });
+  }
 });

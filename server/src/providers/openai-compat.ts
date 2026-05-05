@@ -167,4 +167,25 @@ export class OpenAICompatProvider extends BaseProvider {
       return false;
     }
   }
+
+  async getModels(apiKey: string): Promise<Array<{ id: string; name: string }>> {
+    try {
+      const url = this.validateUrl ?? `${this.baseUrl}/models`;
+      const res = await this.fetchWithTimeout(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          ...this.extraHeaders,
+        },
+      }, 10000);
+      if (!res.ok) return [];
+      const data = await res.json() as any;
+      if (data && Array.isArray(data.data)) {
+        return data.data.map((m: any) => ({ id: m.id, name: m.name || m.id }));
+      }
+      return [];
+    } catch {
+      return [];
+    }
+  }
 }

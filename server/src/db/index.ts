@@ -827,3 +827,40 @@ export function regenerateUnifiedKey(): string {
   db.prepare("UPDATE settings SET value = ? WHERE key = 'unified_api_key'").run(key);
   return key;
 }
+
+/**
+ * Dynamically import a list of models for a platform.
+ * Inserts missing models with a default intelligence_rank of 50.
+ */
+export function importModels(db: Database.Database, platform: string, modelsToImport: Array<{ id: string; name: string }>) {
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO models (
+      platform, model_id, display_name, intelligence_rank, speed_rank, size_label,
+      rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window, enabled
+    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, '', NULL, 1)
+  `);
+
+  const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
+
+  const apply = db.transaction(() => {
+    for (const m of modelsToImport) {
+      insert.run(platform, m.id, m.name || m.id, 50, 5, 'Unknown');
+    }
+
+    const missing = db.prepare(`
+      SELECT m.id FROM models m
+      LEFT JOIN fallback_config f ON m.id = f.model_db_id
+      WHERE f.id IS NULL
+      ORDER BY m.intelligence_rank ASC
+    `).all() as { id: number }[];
+
+    if (missing.length > 0) {
+      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      for (let i = 0; i < missing.length; i++) {
+        addFb.run(missing[i].id, maxPriority + i + 1);
+      }
+    }
+  });
+
+  apply();
+}

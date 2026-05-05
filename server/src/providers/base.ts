@@ -37,6 +37,8 @@ export abstract class BaseProvider {
 
   abstract validateKey(apiKey: string): Promise<boolean>;
 
+  abstract getModels(apiKey: string): Promise<Array<{ id: string; name: string }>>;
+
   protected async fetchWithTimeout(
     url: string,
     init: RequestInit,

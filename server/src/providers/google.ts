@@ -447,4 +447,25 @@ export class GoogleProvider extends BaseProvider {
       return false;
     }
   }
+
+  async getModels(apiKey: string): Promise<Array<{ id: string; name: string }>> {
+    try {
+      const res = await this.fetchWithTimeout(
+        `${API_BASE}/models?key=${apiKey}`,
+        { method: 'GET' },
+        10000,
+      );
+      if (!res.ok) return [];
+      const data = await res.json() as any;
+      if (data && Array.isArray(data.models)) {
+        return data.models.map((m: any) => ({
+          id: m.name.replace('models/', ''),
+          name: m.displayName || m.name.replace('models/', ''),
+        }));
+      }
+      return [];
+    } catch {
+      return [];
+    }
+  }
 }

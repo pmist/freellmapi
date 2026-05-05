@@ -160,4 +160,8 @@ export class CloudflareProvider extends BaseProvider {
       return false;
     }
   }
+
+  async getModels(apiKey: string): Promise<Array<{ id: string; name: string }>> {
+    return [];
+  }
 }
