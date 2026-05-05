@@ -228,6 +228,131 @@ function SyncModelsModal({
   )
 }
 
+
+function SyncAllModelsModal({
+  onClose, onImported
+}: {
+  onClose: () => void, onImported: () => void
+}) {
+  const [selected, setSelected] = useState<Record<string, Set<string>>>({})
+
+  const { data: results, isLoading, error } = useQuery<{keyId: number, platform: string, models: Array<{id: string, name: string}>}[]>({
+    queryKey: ['sync-models-all'],
+    queryFn: () => apiFetch('/api/keys/sync/all'),
+  })
+
+  const importMutation = useMutation({
+    mutationFn: (items: {platform: string, models: Array<{id: string, name: string}>}[]) =>
+      apiFetch('/api/keys/sync/import-bulk', {
+        method: 'POST',
+        body: JSON.stringify({ items })
+      }),
+    onSuccess: () => {
+      onImported()
+      onClose()
+    }
+  })
+
+  const handleToggle = (platform: string, modelId: string) => {
+    const next = { ...selected }
+    if (!next[platform]) next[platform] = new Set()
+    if (next[platform].has(modelId)) next[platform].delete(modelId)
+    else next[platform].add(modelId)
+    setSelected(next)
+  }
+
+  const handleToggleAll = (platform: string, models: {id: string}[]) => {
+    const next = { ...selected }
+    const platformSet = new Set(next[platform] || [])
+    if (platformSet.size === models.length) {
+      next[platform] = new Set()
+    } else {
+      next[platform] = new Set(models.map(m => m.id))
+    }
+    setSelected(next)
+  }
+
+  const handleImport = () => {
+    if (!results) return
+    const items = results.map(r => ({
+      platform: r.platform,
+      models: r.models.filter(m => selected[r.platform]?.has(m.id))
+    })).filter(i => i.models.length > 0)
+    
+    importMutation.mutate(items)
+  }
+
+  const totalSelected = Object.values(selected).reduce((acc, set) => acc + set.size, 0)
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
+      <div className="w-full max-w-2xl bg-card border rounded-lg shadow-lg flex flex-col max-h-[85vh]">
+        <div className="flex items-center justify-between p-4 border-b">
+          <h2 className="text-sm font-medium">Sync All Models</h2>
+          <Button variant="ghost" size="icon" className="size-6 text-muted-foreground" onClick={onClose}>
+            <X className="size-4" />
+          </Button>
+        </div>
+        
+        <div className="flex-1 overflow-auto p-4 space-y-6">
+          {isLoading ? (
+            <p className="text-sm text-muted-foreground">Discovering models across all providers...</p>
+          ) : error ? (
+            <p className="text-sm text-destructive">Failed to fetch models from providers.</p>
+          ) : !results || results.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No new models discovered from enabled keys.</p>
+          ) : (
+            <div className="space-y-6">
+              {results.map(res => (
+                <div key={res.keyId} className="space-y-2">
+                  <div className="flex items-center justify-between pb-1 border-b">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{res.platform}</span>
+                    <Button 
+                      variant="ghost" 
+                      size="sm" 
+                      className="h-6 text-[10px] px-2"
+                      onClick={() => handleToggleAll(res.platform, res.models)}
+                    >
+                      {selected[res.platform]?.size === res.models.length ? 'Deselect Platform' : 'Select Platform'}
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {res.models.map(m => (
+                      <label key={m.id} className="flex items-center gap-3 p-2 rounded hover:bg-muted cursor-pointer border border-transparent hover:border-border transition-colors">
+                        <input 
+                          type="checkbox" 
+                          checked={selected[res.platform]?.has(m.id) || false}
+                          onChange={() => handleToggle(res.platform, m.id)}
+                          className="accent-primary size-4"
+                        />
+                        <div className="flex flex-col overflow-hidden">
+                          <span className="text-xs font-medium truncate">{m.name}</span>
+                          <span className="text-[10px] text-muted-foreground font-mono truncate">{m.id}</span>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        
+        <div className="p-4 border-t flex justify-end gap-2 bg-muted/20">
+          <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
+          <Button 
+            size="sm" 
+            onClick={handleImport} 
+            disabled={totalSelected === 0 || importMutation.isPending}
+          >
+            {importMutation.isPending ? 'Importing...' : `Import ${totalSelected} Models`}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function KeysPage() {
   const queryClient = useQueryClient()
   const [platform, setPlatform] = useState<Platform | ''>('')
@@ -235,6 +360,7 @@ export default function KeysPage() {
   const [accountId, setAccountId] = useState('')
   const [label, setLabel] = useState('')
   const [syncModalState, setSyncModalState] = useState<{ id: number; platform: string } | null>(null)
+  const [syncAllOpen, setSyncAllOpen] = useState(false)
 
   const { data: keys = [], isLoading } = useQuery<ApiKey[]>({
     queryKey: ['keys'],
@@ -310,9 +436,15 @@ export default function KeysPage() {
         description="Provider credentials and the unified API key your apps connect with."
         actions={
           keys.length > 0 && (
-            <Button variant="outline" size="sm" onClick={() => checkAll.mutate()} disabled={checkAll.isPending}>
-              {checkAll.isPending ? 'Checking…' : 'Check all'}
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => setSyncAllOpen(true)}>
+                <RefreshCw className="size-3 mr-2" />
+                Sync all
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => checkAll.mutate()} disabled={checkAll.isPending}>
+                {checkAll.isPending ? 'Checking…' : 'Check all'}
+              </Button>
+            </div>
           )
         }
       />
@@ -438,6 +570,16 @@ export default function KeysPage() {
           keyId={syncModalState.id}
           platform={syncModalState.platform}
           onClose={() => setSyncModalState(null)}
+          onImported={() => {
+            queryClient.invalidateQueries({ queryKey: ['fallback'] })
+            queryClient.invalidateQueries({ queryKey: ['keys'] })
+          }}
+        />
+      )}
+
+      {syncAllOpen && (
+        <SyncAllModelsModal
+          onClose={() => setSyncAllOpen(false)}
           onImported={() => {
             queryClient.invalidateQueries({ queryKey: ['fallback'] })
             queryClient.invalidateQueries({ queryKey: ['keys'] })

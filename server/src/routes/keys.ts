@@ -186,3 +186,63 @@ keysRouter.post('/:id/models/import', async (req: Request, res: Response) => {
     res.status(500).json({ error: { message: err.message || 'Failed to import models' } });
   }
 });
+
+// Sync models from all enabled keys
+keysRouter.get('/sync/all', async (_req: Request, res: Response) => {
+  const db = getDb();
+  const keys = db.prepare('SELECT id, platform, encrypted_key, iv, auth_tag FROM api_keys WHERE enabled = 1').all() as any[];
+  
+  const results = [];
+  for (const k of keys) {
+    const provider = getProvider(k.platform as Platform);
+    if (!provider) continue;
+    
+    try {
+      const key = decrypt(k.encrypted_key, k.iv, k.auth_tag);
+      const models = await provider.getModels(key);
+      if (models.length > 0) {
+        results.push({
+          keyId: k.id,
+          platform: k.platform,
+          models
+        });
+      }
+    } catch (err) {
+      console.error(`Failed to sync models for key ${k.id} (${k.platform}):`, err);
+    }
+  }
+  
+  res.json(results);
+});
+
+const importBulkSchema = z.object({
+  items: z.array(z.object({
+    platform: z.string(),
+    models: z.array(z.object({
+      id: z.string(),
+      name: z.string()
+    }))
+  }))
+});
+
+// Bulk import models
+keysRouter.post('/sync/import-bulk', async (req: Request, res: Response) => {
+  const parsed = importBulkSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: { message: 'Invalid bulk import payload' } });
+    return;
+  }
+
+  const db = getDb();
+  try {
+    const { importModels } = await import('../db/index.js');
+    let totalCount = 0;
+    for (const item of parsed.data.items) {
+      importModels(db, item.platform, item.models);
+      totalCount += item.models.length;
+    }
+    res.json({ success: true, totalCount });
+  } catch (err: any) {
+    res.status(500).json({ error: { message: err.message || 'Failed to bulk import models' } });
+  }
+});
