@@ -25,6 +25,7 @@ const PLATFORMS: { value: Platform; label: string }[] = [
   { value: 'minimax', label: 'MiniMax' },
   { value: 'opencode', label: 'OpenCode Zen' },
   { value: 'clod', label: 'CLōD' },
+  { value: 'deepseek', label: 'DeepSeek' },
 ]
 
 const statusDot: Record<string, string> = {

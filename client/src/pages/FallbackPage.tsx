@@ -71,6 +71,7 @@ const platformColors: Record<string, string> = {
   minimax:     '#a855f7',
   opencode:    '#10b981',
   clod:        '#3b82f6',
+  deepseek:    '#1d4ed8',
 }
 
 function TokenUsageBar({ data }: { data: TokenUsageData }) {

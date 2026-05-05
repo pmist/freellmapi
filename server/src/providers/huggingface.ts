@@ -43,7 +43,7 @@ export class HuggingFaceProvider extends BaseProvider {
       throw new Error(`HuggingFace API error ${res.status}: ${(err as any).error ?? res.statusText}`);
     }
 
-    const rawData = await res.json();
+    const rawData = await res.json() as any;
     const data = { ...rawData } as ChatCompletionResponse;
     data._routed_via = { platform: 'huggingface', model: modelId };
     data._request_response = {

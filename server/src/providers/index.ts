@@ -109,6 +109,13 @@ register(new OpenAICompatProvider({
   baseUrl: 'https://api.clod.io/v1',
 }));
 
+// DeepSeek - OpenAI-compatible
+register(new OpenAICompatProvider({
+  platform: 'deepseek',
+  name: 'DeepSeek',
+  baseUrl: 'https://api.deepseek.com',
+}));
+
 export function getProvider(platform: Platform): BaseProvider | undefined {
   return providers.get(platform);
 }

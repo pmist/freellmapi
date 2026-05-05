@@ -43,6 +43,7 @@ export function initDb(dbPath?: string): Database.Database {
   migrateModelsV6(db);
   migrateModelsV7(db);
   migrateModelsV8(db);
+  migrateModelsV9(db);
   ensureUnifiedKey(db);
 
   console.log(`Database initialized at ${resolvedPath}`);
@@ -755,6 +756,37 @@ function migrateModelsV8(db: Database.Database) {
     ['clod', 'DeepSeek V3', 'DeepSeek V3 (CLōD)', 5, 9, 'Frontier', null, null, null, null, '~10M', 128000],
     ['clod', 'Llama 3.1 8B', 'Llama 3.1 8B (CLōD)', 25, 2, 'Small', null, null, null, null, '~20M', 128000],
     ['clod', 'Minimax M2.5', 'MiniMax M2.5 (CLōD)', 15, 4, 'Large', null, null, null, null, '~15M', 196608],
+  ];
+
+  const apply = db.transaction(() => {
+    for (const m of additions) insert.run(...m);
+
+    const missing = db.prepare(`
+      SELECT m.id FROM models m
+      LEFT JOIN fallback_config f ON m.id = f.model_db_id
+      WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
+    `).all() as { id: number }[];
+    if (missing.length > 0) {
+      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
+      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+    }
+  });
+  apply();
+}
+
+/**
+ * V9: Add DeepSeek models directly from deepseek.com
+ */
+function migrateModelsV9(db: Database.Database) {
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const additions: Array<[string, string, string, number, number, string, number | null, number | null, number | null, number | null, string, number | null]> = [
+    ['deepseek', 'deepseek-chat', 'DeepSeek V3', 5, 8, 'Frontier', null, null, null, null, '', 65536],
+    ['deepseek', 'deepseek-reasoner', 'DeepSeek R1', 2, 10, 'Frontier', null, null, null, null, '', 65536],
   ];
 
   const apply = db.transaction(() => {

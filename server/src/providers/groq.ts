@@ -39,7 +39,7 @@ export class GroqProvider extends BaseProvider {
       throw new Error(`Groq API error ${res.status}: ${(err as any).error?.message ?? res.statusText}`);
     }
 
-    const rawData = await res.json();
+    const rawData = await res.json() as any;
     const data = { ...rawData } as ChatCompletionResponse;
     data._routed_via = { platform: 'groq', model: modelId };
     data._request_response = {

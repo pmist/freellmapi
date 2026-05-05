@@ -62,7 +62,7 @@ export class CloudflareProvider extends BaseProvider {
       throw new Error(`Cloudflare API error ${res.status}: ${(err as any).error?.message ?? (err as any).errors?.[0]?.message ?? res.statusText}`);
     }
 
-    const rawData = await res.json();
+    const rawData = await res.json() as any;
     const data = { ...rawData } as ChatCompletionResponse;
     data._routed_via = { platform: 'cloudflare', model: modelId };
     data._request_response = {

@@ -16,7 +16,8 @@ export type Platform =
   | 'moonshot'
   | 'minimax'
   | 'opencode'
-  | 'clod';
+  | 'clod'
+  | 'deepseek';
 
 export interface Model {
   id: number;
