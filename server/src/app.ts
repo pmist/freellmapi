@@ -37,6 +37,11 @@ export function createApp() {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
+  // Cursor-compatible health endpoint
+  app.get('/health', (_req, res) => {
+    res.json({ status: 'ok' });
+  });
+
   // Error handler (for API routes)
   app.use(errorHandler);
 
