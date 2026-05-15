@@ -2,6 +2,10 @@
   "name": "@freellmapi/shared",
   "version": "0.1.0",
   "private": true,
-  "main": "./types.ts",
-  "types": "./types.ts"
+  "type": "module",
+  "exports": {
+    "./types.js": "./types.d.ts"
+  },
+  "main": "./types.d.ts",
+  "types": "./types.d.ts"
 }
