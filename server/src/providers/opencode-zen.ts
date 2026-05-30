@@ -69,6 +69,16 @@ function toAnthropicTools(tools?: any[]): any {
   }));
 }
 
+function toAnthropicToolChoice(toolChoice?: any): any {
+  if (!toolChoice) return undefined;
+  if (typeof toolChoice === 'string') {
+    if (toolChoice === 'none') return { type: 'none' };
+    if (toolChoice === 'required') return { type: 'any' };
+    return { type: 'auto' };
+  }
+  return { type: 'tool', name: toolChoice.function.name };
+}
+
 export class OpenCodeZenProvider extends BaseProvider {
   readonly platform = 'opencode' as const;
   readonly name = 'OpenCode Zen';
@@ -207,14 +217,20 @@ export class OpenCodeZenProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
-    const reqBody = {
+    const reqBody: Record<string, unknown> = {
       model: modelId,
       input: messages,
       temperature: options?.temperature,
       max_output_tokens: options?.max_tokens,
       top_p: options?.top_p,
+      stop: options?.stop,
+      frequency_penalty: options?.frequency_penalty,
+      presence_penalty: options?.presence_penalty,
+      seed: options?.seed,
+      user: options?.user,
       tools: options?.tools,
       tool_choice: options?.tool_choice,
+      parallel_tool_calls: options?.parallel_tool_calls,
     };
 
     const res = await this.fetchWithTimeout(`${this.baseUrl}/responses`, {
@@ -251,13 +267,16 @@ export class OpenCodeZenProvider extends BaseProvider {
       content: extractMessageText(m.content),
     }));
 
-    const reqBody = {
+    const reqBody: Record<string, unknown> = {
       model: modelId,
       messages: anthropicMessages,
       max_tokens: options?.max_tokens || 4096,
       temperature: options?.temperature,
       top_p: options?.top_p,
+      stop_sequences: options?.stop ? (Array.isArray(options.stop) ? options.stop : [options.stop]) : undefined,
       tools: toAnthropicTools(options?.tools),
+      tool_choice: toAnthropicToolChoice(options?.tool_choice),
+      ...(options?.user ? { metadata: { user_id: options.user } } : {}),
     };
 
     const res = await this.fetchWithTimeout(`${this.baseUrl}/messages`, {
@@ -290,7 +309,7 @@ export class OpenCodeZenProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
-    const reqBody = {
+    const reqBody: Record<string, unknown> = {
       contents: messages.map(m => ({
         role: m.role === 'user' ? 'user' : 'model',
         parts: [{ text: extractMessageText(m.content) }],
@@ -299,8 +318,10 @@ export class OpenCodeZenProvider extends BaseProvider {
         temperature: options?.temperature,
         maxOutputTokens: options?.max_tokens,
         topP: options?.top_p,
+        stopSequences: options?.stop ? (Array.isArray(options.stop) ? options.stop : [options.stop]) : undefined,
       },
       tools: toGeminiTools(options?.tools),
+      ...(options?.user ? { user: options.user } : {}),
     };
 
     const res = await this.fetchWithTimeout(`${this.baseUrl}/models/${modelId}:generateContent`, {
@@ -539,7 +560,10 @@ export class OpenCodeZenProvider extends BaseProvider {
         max_tokens: options?.max_tokens || 4096,
         temperature: options?.temperature,
         top_p: options?.top_p,
+        stop_sequences: options?.stop ? (Array.isArray(options.stop) ? options.stop : [options.stop]) : undefined,
         tools: toAnthropicTools(options?.tools),
+        tool_choice: toAnthropicToolChoice(options?.tool_choice),
+        ...(options?.user ? { metadata: { user_id: options.user } } : {}),
         stream: true,
       }),
     }, 30000);

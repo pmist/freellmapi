@@ -16,7 +16,7 @@ export default defineConfig({
     https: process.env.VITE_HTTPS === 'true' ? {
       key: fs.readFileSync(path.resolve(__dirname, '../server/server.key')),
       cert: fs.readFileSync(path.resolve(__dirname, '../server/server.cert')),
-    } : false,
+    } : undefined,
     proxy: {
       '/api': {
         target: process.env.VITE_HTTPS === 'true' ? 'https://localhost:3001' : 'http://localhost:3001',

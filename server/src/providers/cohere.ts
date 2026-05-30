@@ -31,6 +31,7 @@ export class CohereProvider extends BaseProvider {
         user: options?.user,
         tools: options?.tools,
         tool_choice: options?.tool_choice,
+        parallel_tool_calls: options?.parallel_tool_calls,
       };
     }
 
@@ -79,6 +80,7 @@ export class CohereProvider extends BaseProvider {
       user: options?.user,
       tools: options?.tools,
       tool_choice: options?.tool_choice,
+      parallel_tool_calls: options?.parallel_tool_calls,
       stream: true,
     };
 
