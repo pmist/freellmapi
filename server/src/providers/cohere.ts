@@ -17,15 +17,24 @@ export class CohereProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
-    const body: Record<string, unknown> = {
-      model: modelId,
-      messages,
-      temperature: options?.temperature,
-      max_tokens: options?.max_tokens,
-      top_p: options?.top_p,
-      tools: options?.tools,
-      tool_choice: options?.tool_choice,
-    };
+    function buildRequest(options?: CompletionOptions): Record<string, unknown> {
+      return {
+        model: modelId,
+        messages,
+        temperature: options?.temperature,
+        max_tokens: options?.max_tokens,
+        top_p: options?.top_p,
+        stop: options?.stop,
+        frequency_penalty: options?.frequency_penalty,
+        presence_penalty: options?.presence_penalty,
+        seed: options?.seed,
+        user: options?.user,
+        tools: options?.tools,
+        tool_choice: options?.tool_choice,
+      };
+    }
+
+    const body = buildRequest(options);
 
     const res = await this.fetchWithTimeout(`${API_BASE}/chat/completions`, {
       method: 'POST',
@@ -63,6 +72,11 @@ export class CohereProvider extends BaseProvider {
       temperature: options?.temperature,
       max_tokens: options?.max_tokens,
       top_p: options?.top_p,
+      stop: options?.stop,
+      frequency_penalty: options?.frequency_penalty,
+      presence_penalty: options?.presence_penalty,
+      seed: options?.seed,
+      user: options?.user,
       tools: options?.tools,
       tool_choice: options?.tool_choice,
       stream: true,

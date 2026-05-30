@@ -106,7 +106,7 @@ export type ChatToolChoice =
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
+  content: string | null | Array<Record<string, unknown>>;
   name?: string;
   tool_call_id?: string;
   tool_calls?: ChatToolCall[];

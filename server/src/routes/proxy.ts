@@ -18,9 +18,24 @@ function getSessionKey(messages: ChatMessage[]): string {
   // Use the first user message as session identifier
   // Hermes sends the full conversation each time, so first user msg is stable
   const firstUser = messages.find(m => m.role === 'user');
-  if (!firstUser || typeof firstUser.content !== 'string') return '';
+  if (!firstUser) return '';
+  // Extract text from content (handle string or array content parts)
+  const contentStr = extractMessageText(firstUser.content);
+  if (!contentStr) return '';
   // Hash: first 100 chars of first user message + message count
-  return `${firstUser.content.slice(0, 100)}:${messages.length > 2 ? 'multi' : 'single'}`;
+  return `${contentStr.slice(0, 100)}:${messages.length > 2 ? 'multi' : 'single'}`;
+}
+
+/** Safely extract text from a message content field (string, null, or content part array) */
+function extractMessageText(content: string | null | Array<Record<string, unknown>>): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map(p => (typeof p.text === 'string' ? p.text : ''))
+      .filter(Boolean)
+      .join(' ');
+  }
+  return '';
 }
 
 function getStickyModel(messages: ChatMessage[]): number | undefined {
@@ -55,17 +70,21 @@ function setStickyModel(messages: ChatMessage[], modelDbId: number) {
   }
 }
 
-// OpenAI-compatible /models endpoint (used by Hermes for metadata)
+// OpenAI-compatible /v1/models endpoint
+// Returns models in OpenAI format: https://developers.openai.com/api/reference/resources/models/methods/list
 proxyRouter.get('/models', (_req: Request, res: Response) => {
   const db = getDb();
   const models = db.prepare('SELECT platform, model_id, display_name, context_window FROM models WHERE enabled = 1 ORDER BY intelligence_rank').all() as any[];
+  // Use a base timestamp (Jan 1 2026) so models sort chronologically by intelligence rank
+  const baseCreated = 1767225600; // 2026-01-01T00:00:00Z
   res.json({
     object: 'list',
-    data: models.map(m => ({
+    data: models.map((m, idx) => ({
       id: m.model_id,
       object: 'model',
-      created: 0,
+      created: baseCreated + idx, // incremental so ordering can be inferred
       owned_by: m.platform,
+      // Extra fields (backwards-compatible additions)
       name: m.display_name,
       context_window: m.context_window,
     })),
@@ -73,6 +92,24 @@ proxyRouter.get('/models', (_req: Request, res: Response) => {
 });
 
 const MAX_RETRIES = 20;
+
+// ── OpenAI-Compatible Content Parts (for multimodal / user messages) ──
+const textContentPartSchema = z.object({
+  type: z.literal('text'),
+  text: z.string(),
+});
+
+const imageUrlContentPartSchema = z.object({
+  type: z.literal('image_url'),
+  image_url: z.object({
+    url: z.string(),
+    detail: z.string().optional(),
+  }),
+});
+
+const contentPartSchema = z.union([textContentPartSchema, imageUrlContentPartSchema]);
+
+// ── Message Schemas (OpenAI-compatible) ──
 
 const toolCallSchema = z.object({
   id: z.string().min(1),
@@ -85,13 +122,13 @@ const toolCallSchema = z.object({
 
 const systemMessageSchema = z.object({
   role: z.literal('system'),
-  content: z.string(),
+  content: z.union([z.string(), z.array(contentPartSchema)]),
   name: z.string().optional(),
 });
 
 const userMessageSchema = z.object({
   role: z.literal('user'),
-  content: z.string(),
+  content: z.union([z.string(), z.array(contentPartSchema)]),
   name: z.string().optional(),
 });
 
@@ -101,11 +138,13 @@ const assistantMessageSchema = z.object({
   name: z.string().optional(),
   tool_calls: z.array(toolCallSchema).optional(),
 }).refine((msg) => {
-  const hasContent = typeof msg.content === 'string' && msg.content.length > 0;
+  // OpenAI allows null/empty content as long as tool_calls is present
+  // or just an empty assistant message (rare, but valid)
+  const hasContent = typeof msg.content === 'string';
   const hasToolCalls = (msg.tool_calls?.length ?? 0) > 0;
-  return hasContent || hasToolCalls;
+  return hasContent || hasToolCalls || msg.content === null || msg.content === undefined;
 }, {
-  message: 'assistant messages must include non-empty content or tool_calls',
+  message: 'assistant messages must include content or tool_calls',
 });
 
 const toolMessageSchema = z.object({
@@ -147,6 +186,11 @@ const chatCompletionSchema = z.object({
   max_tokens: z.number().int().positive().optional(),
   top_p: z.number().min(0).max(1).optional(),
   stream: z.boolean().optional(),
+  stop: z.union([z.string(), z.array(z.string())]).optional(),
+  frequency_penalty: z.number().min(-2).max(2).optional(),
+  presence_penalty: z.number().min(-2).max(2).optional(),
+  seed: z.number().int().optional(),
+  user: z.string().optional(),
   tools: z.array(toolDefinitionSchema).optional(),
   tool_choice: toolChoiceSchema.optional(),
   parallel_tool_calls: z.boolean().optional(),
@@ -173,7 +217,12 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     const unifiedKey = getUnifiedApiKey();
     if (token !== unifiedKey) {
       res.status(401).json({
-        error: { message: 'Invalid API key', type: 'authentication_error' },
+        error: {
+          message: 'Incorrect API key provided. You can find your API key at the settings page.',
+          type: 'invalid_request_error',
+          param: null,
+          code: 'invalid_api_key',
+        },
       });
       return;
     }
@@ -182,16 +231,22 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   // Validate request
   const parsed = chatCompletionSchema.safeParse(req.body);
   if (!parsed.success) {
+    // Format validation errors with param info for OpenAI-compatible clients
+    const firstError = parsed.error.errors[0];
+    const errorPath = firstError?.path?.join('.') ?? null;
     res.status(400).json({
       error: {
-        message: `Invalid request: ${parsed.error.errors.map(e => e.message).join(', ')}`,
+        message: `Invalid request: ${firstError?.message ?? 'Unknown validation error'}` +
+          (parsed.error.errors.length > 1 ? ` (+${parsed.error.errors.length - 1} more issues)` : ''),
         type: 'invalid_request_error',
+        param: errorPath,
+        code: 'invalid_request_error',
       },
     });
     return;
   }
 
-  const { temperature, max_tokens, top_p, stream, tools, tool_choice, parallel_tool_calls } = parsed.data;
+  const { temperature, max_tokens, top_p, stream, stop, frequency_penalty, presence_penalty, seed, user, tools, tool_choice, parallel_tool_calls } = parsed.data;
   const messages: ChatMessage[] = parsed.data.messages.map((m): ChatMessage => {
     if (m.role === 'assistant') {
       return {
@@ -213,14 +268,14 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
 
     return {
       role: m.role,
-      content: m.content,
+      content: m.content as string | null | Array<Record<string, unknown>>,
       ...(m.name ? { name: m.name } : {}),
     };
   });
 
   const estimatedInputTokens = messages.reduce((sum, m) => {
-    if (typeof m.content !== 'string') return sum;
-    return sum + Math.ceil(m.content.length / 4);
+    const text = extractMessageText(m.content);
+    return sum + Math.ceil(text.length / 4);
   }, 0);
   const estimatedTotal = estimatedInputTokens + (max_tokens ?? 1000);
 
@@ -278,11 +333,18 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           error: {
             message: `All models rate-limited. Last error: ${lastError.message}`,
             type: 'rate_limit_error',
+            param: null,
+            code: 'rate_limit_error',
           },
         });
       } else {
         res.status(err.status ?? 503).json({
-          error: { message: err.message, type: 'routing_error' },
+          error: {
+            message: err.message,
+            type: err.status === 400 ? 'invalid_request_error' : 'server_error',
+            param: null,
+            code: 'service_unavailable',
+          },
         });
       }
       return;
@@ -292,7 +354,42 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
 
     try {
       if (stream) {
-        // Streaming - can't retry once we start writing
+        // Streaming - start the provider FIRST to catch errors before sending headers
+        let gen: AsyncGenerator<any>;
+        try {
+          gen = route.provider.streamChatCompletion(
+            route.apiKey, messages, route.modelId,
+            { temperature, max_tokens, top_p, stop, frequency_penalty, presence_penalty, seed, user, tools, tool_choice, parallel_tool_calls },
+          );
+        } catch (providerErr: any) {
+          // Provider rejected before streaming started - can retry
+          const latency = Date.now() - start;
+          logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, providerErr.message);
+          const isOpencode = route.platform === 'opencode';
+          const shouldRetry = isOpencode || isRetryableError(providerErr);
+          if (shouldRetry) {
+            const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
+            skipKeys.add(skipId);
+            const cooldownMs = isOpencode ? 8 * 60 * 60 * 1000 : 120_000;
+            setCooldown(route.platform, route.modelId, route.keyId, cooldownMs);
+            recordRateLimitHit(route.modelDbId);
+            lastError = providerErr;
+            console.log(`[Proxy] ${providerErr.message.slice(0, 60)} from ${route.displayName}, falling back (attempt ${attempt + 1}/${MAX_RETRIES})`);
+            continue;
+          }
+          // Non-retryable - send JSON error (no SSE headers set yet)
+          res.status(502).json({
+            error: {
+              message: `Provider error (${route.displayName}): ${providerErr.message}`,
+              type: 'server_error',
+              param: null,
+              code: 'provider_error',
+            },
+          });
+          return;
+        }
+
+        // Stream started successfully - NOW set SSE headers and stream
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('Connection', 'keep-alive');
@@ -300,18 +397,19 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
 
         let totalOutputTokens = 0;
-        const gen = route.provider.streamChatCompletion(
-          route.apiKey, messages, route.modelId,
-          { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls },
-        );
-
-        for await (const chunk of gen) {
-          const text = chunk.choices[0]?.delta?.content ?? '';
-          totalOutputTokens += Math.ceil(text.length / 4);
-          if (parsed.data.model) {
-            chunk.model = parsed.data.model;
+        try {
+          for await (const chunk of gen) {
+            const text = chunk.choices[0]?.delta?.content ?? '';
+            totalOutputTokens += Math.ceil(text.length / 4);
+            if (parsed.data.model) {
+              chunk.model = parsed.data.model;
+            }
+            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
           }
-          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        } catch (streamErr: any) {
+          // Mid-stream error - end gracefully with SSE error event
+          console.log(`[Proxy] Stream error from ${route.displayName}: ${streamErr.message.slice(0, 60)}`);
+          res.write(`data: ${JSON.stringify({ error: { message: `Stream error: ${streamErr.message}`, type: 'stream_error' } })}\n\n`);
         }
 
         res.write('data: [DONE]\n\n');
@@ -325,7 +423,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       } else {
         const result = await route.provider.chatCompletion(
           route.apiKey, messages, route.modelId,
-          { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls },
+          { temperature, max_tokens, top_p, stop, frequency_penalty, presence_penalty, seed, user, tools, tool_choice, parallel_tool_calls },
         );
 
         if (parsed.data.model) {
@@ -375,7 +473,9 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       res.status(502).json({
         error: {
           message: `Provider error (${route.displayName}): ${err.message}`,
-          type: 'provider_error',
+          type: 'server_error',
+          param: null,
+          code: 'provider_error',
         },
       });
       return;
@@ -387,6 +487,8 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     error: {
       message: `All models rate-limited after ${MAX_RETRIES} attempts. Last: ${lastError?.message}`,
       type: 'rate_limit_error',
+      param: null,
+      code: 'rate_limit_error',
     },
   });
 });

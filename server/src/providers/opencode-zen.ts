@@ -6,6 +6,18 @@ import type {
 } from '@freellmapi/shared/types.js';
 import { BaseProvider, type CompletionOptions } from './base.js';
 
+/** Safely extract text from a message content field (string, null, or content part array) */
+function extractMessageText(content: string | null | Array<Record<string, unknown>>): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map(p => (typeof p.text === 'string' ? p.text : ''))
+      .filter(Boolean)
+      .join(' ');
+  }
+  return '';
+}
+
 type ZenEndpointType = 'chat' | 'responses' | 'messages' | 'gemini';
 
 interface ZenModelInfo {
@@ -155,6 +167,11 @@ export class OpenCodeZenProvider extends BaseProvider {
       temperature: options?.temperature,
       max_tokens: options?.max_tokens,
       top_p: options?.top_p,
+      stop: options?.stop,
+      frequency_penalty: options?.frequency_penalty,
+      presence_penalty: options?.presence_penalty,
+      seed: options?.seed,
+      user: options?.user,
       tools: options?.tools,
       tool_choice: options?.tool_choice,
       parallel_tool_calls: options?.parallel_tool_calls,
@@ -231,7 +248,7 @@ export class OpenCodeZenProvider extends BaseProvider {
   ): Promise<ChatCompletionResponse> {
     const anthropicMessages = messages.map(m => ({
       role: m.role === 'assistant' ? 'assistant' : 'user',
-      content: m.content || '',
+      content: extractMessageText(m.content),
     }));
 
     const reqBody = {
@@ -276,7 +293,7 @@ export class OpenCodeZenProvider extends BaseProvider {
     const reqBody = {
       contents: messages.map(m => ({
         role: m.role === 'user' ? 'user' : 'model',
-        parts: [{ text: m.content || '' }],
+        parts: [{ text: extractMessageText(m.content) }],
       })),
       generationConfig: {
         temperature: options?.temperature,
@@ -402,7 +419,7 @@ export class OpenCodeZenProvider extends BaseProvider {
           index: 0,
           delta: {
             role: 'assistant',
-            content: response.choices[0].message.content ?? undefined,
+            content: typeof response.choices[0].message.content === 'string' ? response.choices[0].message.content : undefined,
           },
           finish_reason: response.choices[0].finish_reason,
         }],
@@ -420,7 +437,7 @@ export class OpenCodeZenProvider extends BaseProvider {
           index: 0,
           delta: {
             role: 'assistant',
-            content: response.choices[0].message.content ?? undefined,
+            content: typeof response.choices[0].message.content === 'string' ? response.choices[0].message.content : undefined,
           },
           finish_reason: response.choices[0].finish_reason,
         }],
@@ -506,7 +523,7 @@ export class OpenCodeZenProvider extends BaseProvider {
   ): AsyncGenerator<ChatCompletionChunk> {
     const anthropicMessages = messages.map(m => ({
       role: m.role === 'assistant' ? 'assistant' : 'user',
-      content: m.content || '',
+      content: extractMessageText(m.content),
     }));
 
     const res = await this.fetchWithTimeout(`${this.baseUrl}/messages`, {
