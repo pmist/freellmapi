@@ -135,12 +135,23 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
   const db = getDb();
 
   // Get fallback chain ordered by priority, optionally filtered by group
-  const fallbackChain = db.prepare(`
-    SELECT fc.model_db_id, fc.priority, fc.enabled
-    FROM fallback_config fc
-    WHERE (?1 IS NULL OR fc.fallback_group = ?1)
-    ORDER BY fc.priority ASC
-  `).all(group ?? null) as FallbackRow[];
+  // NOTE: We avoid `?1 IS NULL` pattern because better-sqlite3 fails with
+  // "Too many parameter values were provided" when binding null to numbered params.
+  let fallbackChain: FallbackRow[];
+  if (group) {
+    fallbackChain = db.prepare(`
+      SELECT fc.model_db_id, fc.priority, fc.enabled
+      FROM fallback_config fc
+      WHERE fc.fallback_group = ?
+      ORDER BY fc.priority ASC
+    `).all(group) as FallbackRow[];
+  } else {
+    fallbackChain = db.prepare(`
+      SELECT fc.model_db_id, fc.priority, fc.enabled
+      FROM fallback_config fc
+      ORDER BY fc.priority ASC
+    `).all() as FallbackRow[];
+  }
 
   // Apply dynamic penalties: sort by (base priority + penalty)
   const sortedChain = fallbackChain.map(entry => ({
