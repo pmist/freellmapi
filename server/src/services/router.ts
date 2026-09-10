@@ -131,15 +131,16 @@ export function getAllPenalties(): Array<{ modelDbId: number; count: number; pen
  * @param skipKeys - set of "platform:modelId:keyId" to skip (failed on this request)
  * @param preferredModelDbId - try this model first (sticky session)
  */
-export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, preferredModelDbId?: number): RouteResult {
+export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, preferredModelDbId?: number, group?: string): RouteResult {
   const db = getDb();
 
-  // Get fallback chain ordered by priority
+  // Get fallback chain ordered by priority, optionally filtered by group
   const fallbackChain = db.prepare(`
     SELECT fc.model_db_id, fc.priority, fc.enabled
     FROM fallback_config fc
+    WHERE (?1 IS NULL OR fc.fallback_group = ?1)
     ORDER BY fc.priority ASC
-  `).all() as FallbackRow[];
+  `).all(group ?? null) as FallbackRow[];
 
   // Apply dynamic penalties: sort by (base priority + penalty)
   const sortedChain = fallbackChain.map(entry => ({

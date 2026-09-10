@@ -116,6 +116,20 @@ register(new OpenAICompatProvider({
   baseUrl: 'https://api.deepseek.com',
 }));
 
+// Kilo Code (kilo.ai) - OpenAI-compatible gateway
+register(new OpenAICompatProvider({
+  platform: 'kilocode',
+  name: 'Kilo Code',
+  baseUrl: 'https://api.kilo.ai/api/gateway',
+}));
+
+// Z.AI - OpenAI-compatible (international GLM endpoint)
+register(new OpenAICompatProvider({
+  platform: 'zai',
+  name: 'Z.AI',
+  baseUrl: 'https://api.z.ai/api/paas/v4',
+}));
+
 export function getProvider(platform: Platform): BaseProvider | undefined {
   return providers.get(platform);
 }

@@ -187,6 +187,7 @@ const chatCompletionSchema = z.object({
   top_p: z.number().min(0).max(1).optional(),
   stream: z.boolean().optional(),
   stop: z.union([z.string(), z.array(z.string())]).optional(),
+  group: z.enum(['auto', 'planning', 'execution', 'review']).optional(),
   frequency_penalty: z.number().min(-2).max(2).optional(),
   presence_penalty: z.number().min(-2).max(2).optional(),
   seed: z.number().int().optional(),
@@ -246,7 +247,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     return;
   }
 
-  const { temperature, max_tokens, top_p, stream, stop, frequency_penalty, presence_penalty, seed, user, tools, tool_choice, parallel_tool_calls } = parsed.data;
+  const { temperature, max_tokens, top_p, stream, stop, group, frequency_penalty, presence_penalty, seed, user, tools, tool_choice, parallel_tool_calls } = parsed.data;
   const messages: ChatMessage[] = parsed.data.messages.map((m): ChatMessage => {
     if (m.role === 'assistant') {
       return {
@@ -324,7 +325,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       if (dynamicPlatform && dynamicModelId) {
         route = routeDynamicRequest(dynamicPlatform, dynamicModelId, estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined);
       } else {
-        route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel);
+        route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel, group);
       }
     } catch (err: any) {
       // No more models available

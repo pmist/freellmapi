@@ -44,6 +44,7 @@ export function initDb(dbPath?: string): Database.Database {
   migrateModelsV7(db);
   migrateModelsV8(db);
   migrateModelsV9(db);
+  migrateModelsV10(db);
   ensureUnifiedKey(db);
 
   console.log(`Database initialized at ${resolvedPath}`);
@@ -832,7 +833,7 @@ export function regenerateUnifiedKey(): string {
  * Dynamically import a list of models for a platform.
  * Inserts missing models with a default intelligence_rank of 50.
  */
-export function importModels(db: Database.Database, platform: string, modelsToImport: Array<{ id: string; name: string }>) {
+export function importModels(db: Database.Database, platform: string, modelsToImport: Array<{ id: string; name: string }>): { inserted: number; skipped: number } {
   const insert = db.prepare(`
     INSERT OR IGNORE INTO models (
       platform, model_id, display_name, intelligence_rank, speed_rank, size_label,
@@ -842,9 +843,17 @@ export function importModels(db: Database.Database, platform: string, modelsToIm
 
   const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
 
+  let inserted = 0;
+  let skipped = 0;
+
   const apply = db.transaction(() => {
     for (const m of modelsToImport) {
-      insert.run(platform, m.id, m.name || m.id, 50, 5, 'Unknown');
+      const info = insert.run(platform, m.id, m.name || m.id, 50, 5, 'Unknown');
+      if (info.changes > 0) {
+        inserted++;
+      } else {
+        skipped++;
+      }
     }
 
     const missing = db.prepare(`
@@ -862,5 +871,65 @@ export function importModels(db: Database.Database, platform: string, modelsToIm
     }
   });
 
+  apply();
+  return { inserted, skipped };
+}
+
+/**
+ * Remove specific models by their DB IDs and platform.
+ * Deletes both the model row and its fallback_config entries.
+ */
+/**
+ * V10: Add Kilo Code and Z.AI models.
+ * Kilo Code: OpenAI-compatible gateway with :free-tier models.
+ * Z.AI: International GLM endpoint with free flash models.
+ */
+function migrateModelsV10(db: Database.Database) {
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const additions: Array<[string, string, string, number, number, string, number | null, number | null, number | null, number | null, string, number | null]> = [
+    // Kilo Code — free-tier models (200 req/h per IP; shared token pool across :free models)
+    ['kilocode', 'x-ai/grok-code-fast-1:optimized:free', 'Grok Code Fast 1 Optimized (free)', 6, 9, 'Large', null, null, null, null, '~6M', 131072],
+    ['kilocode', 'nvidia/nemotron-3-super-120b-a12b:free', 'Nemotron 3 Super 120B (free)', 9, 9, 'Frontier', null, null, null, null, '~6M', 262144],
+    ['kilocode', 'arcee-ai/trinity-large-thinking:free', 'Trinity Large Thinking (free)', 13, 9, 'Large', null, null, null, null, '~6M', 131072],
+    ['kilocode', 'openrouter/free', 'OpenRouter Best Free (free)', 7, 9, 'Large', null, null, null, null, '~6M', 131072],
+    ['kilocode', 'kilo-auto/free', 'Kilo Auto Free', 15, 9, 'Medium', null, null, null, null, '~6M', 131072],
+
+    // Z.AI — international GLM free-tier models
+    ['zai', 'glm-4.7-flash', 'GLM-4.7 Flash (Z.AI)', 10, 4, 'Large', null, null, null, 1000000, '~30M', 131072],
+    ['zai', 'glm-4.5-flash', 'GLM-4.5 Flash (Z.AI)', 15, 4, 'Large', null, null, null, 1000000, '~30M', 131072],
+    ['zai', 'glm-4.6v-flash', 'GLM-4.6V Flash (Z.AI)', 16, 4, 'Large', null, null, null, 1000000, '~30M', 131072],
+  ];
+
+  const apply = db.transaction(() => {
+    for (const m of additions) insert.run(...m);
+
+    const missing = db.prepare(`
+      SELECT m.id FROM models m
+      LEFT JOIN fallback_config f ON m.id = f.model_db_id
+      WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
+    `).all() as { id: number }[];
+    if (missing.length > 0) {
+      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
+      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
+    }
+  });
+  apply();
+}
+
+export function removeModels(db: Database.Database, platform: string, modelDbIds: number[]) {
+  const deleteFallback = db.prepare('DELETE FROM fallback_config WHERE model_db_id = ?');
+  const deleteModel = db.prepare('DELETE FROM models WHERE id = ? AND platform = ?');
+
+  const apply = db.transaction(() => {
+    for (const id of modelDbIds) {
+      deleteFallback.run(id);
+      deleteModel.run(id, platform);
+    }
+  });
   apply();
 }

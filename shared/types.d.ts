@@ -17,7 +17,9 @@ export type Platform =
   | 'minimax'
   | 'opencode'
   | 'clod'
-  | 'deepseek';
+  | 'deepseek'
+  | 'kilocode'
+  | 'zai';
 
 export interface Model {
   id: number;

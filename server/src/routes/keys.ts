@@ -180,8 +180,8 @@ keysRouter.post('/:id/models/import', async (req: Request, res: Response) => {
   try {
     // Dynamic import to avoid circular dependency issues at the top level
     const { importModels } = await import('../db/index.js');
-    importModels(db, row.platform, parsed.data.models);
-    res.json({ success: true, count: parsed.data.models.length });
+    const result = importModels(db, row.platform, parsed.data.models);
+    res.json({ success: true, ...result });
   } catch (err: any) {
     res.status(500).json({ error: { message: err.message || 'Failed to import models' } });
   }
@@ -225,6 +225,75 @@ const importBulkSchema = z.object({
   }))
 });
 
+// Find stale models by comparing provider APIs with DB
+keysRouter.get('/sync/prune', async (_req: Request, res: Response) => {
+  const db = getDb();
+  const keys = db.prepare('SELECT id, platform, encrypted_key, iv, auth_tag FROM api_keys WHERE enabled = 1').all() as any[];
+
+  const seenPlatforms = new Set<string>();
+  const results = [];
+
+  for (const k of keys) {
+    if (seenPlatforms.has(k.platform)) continue;
+    seenPlatforms.add(k.platform);
+
+    const provider = getProvider(k.platform as Platform);
+    if (!provider) continue;
+
+    try {
+      const key = decrypt(k.encrypted_key, k.iv, k.auth_tag);
+      const availableModels = await provider.getModels(key);
+      const availableIds = new Set(availableModels.map((m: { id: string }) => m.id));
+
+      // Find DB models for this platform not in the available list
+      const dbModels = db.prepare('SELECT id, model_id, display_name FROM models WHERE platform = ?').all(k.platform) as any[];
+      const staleModels = dbModels.filter((m: any) => !availableIds.has(m.model_id));
+
+      if (staleModels.length > 0) {
+        results.push({
+          platform: k.platform,
+          staleModels: staleModels.map((m: any) => ({ dbId: m.id, id: m.model_id, name: m.display_name })),
+          totalProviderModels: availableModels.length,
+          totalDbModels: dbModels.length,
+        });
+      }
+    } catch (err) {
+      console.error(`Failed to sync models for key ${k.id} (${k.platform}):`, err);
+    }
+  }
+
+  res.json(results);
+});
+
+const pruneSchema = z.object({
+  items: z.array(z.object({
+    platform: z.string(),
+    modelDbIds: z.array(z.number())
+  }))
+});
+
+// Execute: remove stale models
+keysRouter.post('/sync/prune', async (req: Request, res: Response) => {
+  const parsed = pruneSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: { message: 'Invalid prune payload' } });
+    return;
+  }
+
+  const db = getDb();
+  try {
+    const { removeModels } = await import('../db/index.js');
+    let totalCount = 0;
+    for (const item of parsed.data.items) {
+      removeModels(db, item.platform, item.modelDbIds);
+      totalCount += item.modelDbIds.length;
+    }
+    res.json({ success: true, totalCount });
+  } catch (err: any) {
+    res.status(500).json({ error: { message: err.message || 'Failed to prune models' } });
+  }
+});
+
 // Bulk import models
 keysRouter.post('/sync/import-bulk', async (req: Request, res: Response) => {
   const parsed = importBulkSchema.safeParse(req.body);
@@ -236,12 +305,14 @@ keysRouter.post('/sync/import-bulk', async (req: Request, res: Response) => {
   const db = getDb();
   try {
     const { importModels } = await import('../db/index.js');
-    let totalCount = 0;
+    let totalInserted = 0;
+    let totalSkipped = 0;
     for (const item of parsed.data.items) {
-      importModels(db, item.platform, item.models);
-      totalCount += item.models.length;
+      const result = importModels(db, item.platform, item.models);
+      totalInserted += result.inserted;
+      totalSkipped += result.skipped;
     }
-    res.json({ success: true, totalCount });
+    res.json({ success: true, inserted: totalInserted, skipped: totalSkipped });
   } catch (err: any) {
     res.status(500).json({ error: { message: err.message || 'Failed to bulk import models' } });
   }

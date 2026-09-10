@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { RefreshCw, X } from 'lucide-react'
+import { RefreshCw, Trash2, X } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
 import { Button } from '@/components/ui/button'
@@ -131,6 +131,7 @@ function SyncModelsModal({
   keyId: number, platform: string, onClose: () => void, onImported: () => void
 }) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [importResult, setImportResult] = useState<{ inserted: number; skipped: number } | null>(null)
 
   const { data: models, isLoading, error } = useQuery<{id: string, name: string}[]>({
     queryKey: ['sync-models', keyId],
@@ -139,13 +140,17 @@ function SyncModelsModal({
 
   const importMutation = useMutation({
     mutationFn: (modelsToImport: {id: string, name: string}[]) =>
-      apiFetch(`/api/keys/${keyId}/models/import`, {
+      apiFetch<{ success: boolean; inserted: number; skipped: number }>(`/api/keys/${keyId}/models/import`, {
         method: 'POST',
         body: JSON.stringify({ models: modelsToImport })
       }),
-    onSuccess: () => {
+    onSuccess: (result) => {
+      setImportResult({ inserted: result.inserted, skipped: result.skipped })
       onImported()
-      onClose()
+    },
+    onError: (err: Error) => {
+      setImportResult(null)
+      alert(`Import failed: ${err.message}`)
     }
   })
 
@@ -162,6 +167,8 @@ function SyncModelsModal({
     importMutation.mutate(toImport)
   }
 
+  const allSelected = models && selectedIds.size === models.length
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
       <div className="w-full max-w-md bg-card border rounded-lg shadow-lg flex flex-col max-h-[85vh]">
@@ -173,7 +180,25 @@ function SyncModelsModal({
         </div>
         
         <div className="flex-1 overflow-auto p-4 space-y-3">
-          {isLoading ? (
+          {importResult ? (
+            <div className="space-y-3">
+              <div className={`rounded-lg border p-4 ${importResult.inserted > 0 ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-muted border-border'}`}>
+                <p className="text-sm font-medium">
+                  {importResult.inserted > 0
+                    ? `${importResult.inserted} new model${importResult.inserted === 1 ? '' : 's'} imported`
+                    : 'No new models added'}
+                </p>
+                {importResult.skipped > 0 && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {importResult.skipped} model{importResult.skipped === 1 ? '' : 's'} already existed and were skipped
+                  </p>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                You can close this modal or sync again if you have more models to import.
+              </p>
+            </div>
+          ) : isLoading ? (
             <p className="text-sm text-muted-foreground">Fetching models from provider...</p>
           ) : error ? (
             <p className="text-sm text-destructive">Failed to fetch models.</p>
@@ -188,11 +213,11 @@ function SyncModelsModal({
                   size="sm" 
                   className="h-7 text-xs px-2"
                   onClick={() => {
-                    if (selectedIds.size === models?.length) setSelectedIds(new Set())
+                    if (allSelected) setSelectedIds(new Set())
                     else setSelectedIds(new Set(models?.map(m => m.id)))
                   }}
                 >
-                  {selectedIds.size === models?.length ? 'Deselect All' : 'Select All'}
+                  {allSelected ? 'Deselect All' : 'Select All'}
                 </Button>
               </div>
               {models?.map(m => (
@@ -214,14 +239,18 @@ function SyncModelsModal({
         </div>
         
         <div className="p-4 border-t flex justify-end gap-2 bg-muted/20">
-          <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
-          <Button 
-            size="sm" 
-            onClick={handleImport} 
-            disabled={selectedIds.size === 0 || importMutation.isPending}
-          >
-            {importMutation.isPending ? 'Importing...' : `Import ${selectedIds.size} Models`}
+          <Button variant="outline" size="sm" onClick={onClose}>
+            {importResult ? 'Close' : 'Cancel'}
           </Button>
+          {!importResult && (
+            <Button 
+              size="sm" 
+              onClick={handleImport} 
+              disabled={selectedIds.size === 0 || importMutation.isPending}
+            >
+              {importMutation.isPending ? 'Importing...' : `Import ${selectedIds.size} Models`}
+            </Button>
+          )}
         </div>
       </div>
     </div>
@@ -229,12 +258,167 @@ function SyncModelsModal({
 }
 
 
+function PruneModelsModal({
+  onClose, onPruned
+}: {
+  onClose: () => void, onPruned: () => void
+}) {
+  const [selected, setSelected] = useState<Record<string, Set<number>>>({})
+
+  interface StaleModel {
+    dbId: number
+    id: string
+    name: string
+  }
+
+  interface PruneResult {
+    platform: string
+    staleModels: StaleModel[]
+    totalProviderModels: number
+    totalDbModels: number
+  }
+
+  const { data: results, isLoading, error } = useQuery<PruneResult[]>({
+    queryKey: ['prune-models'],
+    queryFn: () => apiFetch('/api/keys/sync/prune'),
+  })
+
+  const pruneMutation = useMutation({
+    mutationFn: (items: { platform: string, modelDbIds: number[] }[]) =>
+      apiFetch('/api/keys/sync/prune', {
+        method: 'POST',
+        body: JSON.stringify({ items })
+      }),
+    onSuccess: () => {
+      onPruned()
+      onClose()
+    }
+  })
+
+  const handleToggle = (platform: string, dbId: number) => {
+    const next = { ...selected }
+    if (!next[platform]) next[platform] = new Set()
+    if (next[platform].has(dbId)) next[platform].delete(dbId)
+    else next[platform].add(dbId)
+    setSelected(next)
+  }
+
+  const handleToggleAll = (platform: string, models: { dbId: number }[]) => {
+    const next = { ...selected }
+    const platformSet = new Set(next[platform] || [])
+    if (platformSet.size === models.length) {
+      next[platform] = new Set()
+    } else {
+      next[platform] = new Set(models.map(m => m.dbId))
+    }
+    setSelected(next)
+  }
+
+  const handlePrune = () => {
+    if (!results) return
+    const items = results.map(r => ({
+      platform: r.platform,
+      modelDbIds: r.staleModels
+        .filter(m => selected[r.platform]?.has(m.dbId))
+        .map(m => m.dbId)
+    })).filter(i => i.modelDbIds.length > 0)
+
+    pruneMutation.mutate(items)
+  }
+
+  const totalSelected = Object.values(selected).reduce((acc, set) => acc + set.size, 0)
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
+      <div className="w-full max-w-2xl bg-card border rounded-lg shadow-lg flex flex-col max-h-[85vh]">
+        <div className="flex items-center justify-between p-4 border-b">
+          <h2 className="text-sm font-medium">Remove stale models</h2>
+          <Button variant="ghost" size="icon" className="size-6 text-muted-foreground" onClick={onClose}>
+            <X className="size-4" />
+          </Button>
+        </div>
+
+        <div className="flex-1 overflow-auto p-4 space-y-6">
+          {isLoading ? (
+            <p className="text-sm text-muted-foreground">Checking for stale models across all providers...</p>
+          ) : error ? (
+            <p className="text-sm text-destructive">Failed to check for stale models.</p>
+          ) : !results || results.length === 0 ? (
+            <div className="py-8 text-center">
+              <p className="text-sm text-muted-foreground">No stale models found. All synced models match provider catalogs.</p>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {results.map(res => (
+                <div key={res.platform} className="space-y-2">
+                  <div className="flex items-center justify-between pb-1 border-b">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{res.platform}</span>
+                    <div className="flex items-center gap-3">
+                      <span className="text-[11px] text-muted-foreground">
+                        {res.staleModels.length} of {res.totalDbModels} models stale
+                      </span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-[10px] px-2"
+                        onClick={() => handleToggleAll(res.platform, res.staleModels)}
+                      >
+                        {selected[res.platform]?.size === res.staleModels.length ? 'Deselect Platform' : 'Select Platform'}
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {res.staleModels.map(m => (
+                      <label key={m.dbId} className="flex items-center gap-3 p-2 rounded hover:bg-muted/60 cursor-pointer border border-destructive/20 hover:border-destructive/40 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={selected[res.platform]?.has(m.dbId) || false}
+                          onChange={() => handleToggle(res.platform, m.dbId)}
+                          className="accent-destructive size-4"
+                        />
+                        <div className="flex flex-col overflow-hidden">
+                          <span className="text-xs font-medium truncate">{m.name}</span>
+                          <span className="text-[10px] text-muted-foreground font-mono truncate">{m.id}</span>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="p-4 border-t flex justify-between items-center gap-2 bg-muted/20">
+          <span className="text-xs text-muted-foreground">
+            {totalSelected > 0
+              ? `${totalSelected} model${totalSelected === 1 ? '' : 's'} selected for removal`
+              : 'Select models to remove'}
+          </span>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={handlePrune}
+              disabled={totalSelected === 0 || pruneMutation.isPending}
+            >
+              {pruneMutation.isPending ? 'Removing...' : `Remove ${totalSelected} model${totalSelected === 1 ? '' : 's'}`}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function SyncAllModelsModal({
   onClose, onImported
 }: {
   onClose: () => void, onImported: () => void
 }) {
   const [selected, setSelected] = useState<Record<string, Set<string>>>({})
+  const [importResult, setImportResult] = useState<{ inserted: number; skipped: number } | null>(null)
 
   const { data: results, isLoading, error } = useQuery<{keyId: number, platform: string, models: Array<{id: string, name: string}>}[]>({
     queryKey: ['sync-models-all'],
@@ -243,13 +427,17 @@ function SyncAllModelsModal({
 
   const importMutation = useMutation({
     mutationFn: (items: {platform: string, models: Array<{id: string, name: string}>}[]) =>
-      apiFetch('/api/keys/sync/import-bulk', {
+      apiFetch<{ success: boolean; inserted: number; skipped: number }>('/api/keys/sync/import-bulk', {
         method: 'POST',
         body: JSON.stringify({ items })
       }),
-    onSuccess: () => {
+    onSuccess: (result) => {
+      setImportResult({ inserted: result.inserted, skipped: result.skipped })
       onImported()
-      onClose()
+    },
+    onError: (err: Error) => {
+      setImportResult(null)
+      alert(`Import failed: ${err.message}`)
     }
   })
 
@@ -295,7 +483,25 @@ function SyncAllModelsModal({
         </div>
         
         <div className="flex-1 overflow-auto p-4 space-y-6">
-          {isLoading ? (
+          {importResult ? (
+            <div className="space-y-3">
+              <div className={`rounded-lg border p-4 ${importResult.inserted > 0 ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-muted border-border'}`}>
+                <p className="text-sm font-medium">
+                  {importResult.inserted > 0
+                    ? `${importResult.inserted} new model${importResult.inserted === 1 ? '' : 's'} imported`
+                    : 'No new models added'}
+                </p>
+                {importResult.skipped > 0 && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {importResult.skipped} model{importResult.skipped === 1 ? '' : 's'} already existed and were skipped
+                  </p>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                You can close this modal or sync again if you have more models to import.
+              </p>
+            </div>
+          ) : isLoading ? (
             <p className="text-sm text-muted-foreground">Discovering models across all providers...</p>
           ) : error ? (
             <p className="text-sm text-destructive">Failed to fetch models from providers.</p>
@@ -339,14 +545,18 @@ function SyncAllModelsModal({
         </div>
         
         <div className="p-4 border-t flex justify-end gap-2 bg-muted/20">
-          <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
-          <Button 
-            size="sm" 
-            onClick={handleImport} 
-            disabled={totalSelected === 0 || importMutation.isPending}
-          >
-            {importMutation.isPending ? 'Importing...' : `Import ${totalSelected} Models`}
+          <Button variant="outline" size="sm" onClick={onClose}>
+            {importResult ? 'Close' : 'Cancel'}
           </Button>
+          {!importResult && (
+            <Button 
+              size="sm" 
+              onClick={handleImport} 
+              disabled={totalSelected === 0 || importMutation.isPending}
+            >
+              {importMutation.isPending ? 'Importing...' : `Import ${totalSelected} Models`}
+            </Button>
+          )}
         </div>
       </div>
     </div>
@@ -361,6 +571,7 @@ export default function KeysPage() {
   const [label, setLabel] = useState('')
   const [syncModalState, setSyncModalState] = useState<{ id: number; platform: string } | null>(null)
   const [syncAllOpen, setSyncAllOpen] = useState(false)
+  const [pruneOpen, setPruneOpen] = useState(false)
 
   const { data: keys = [], isLoading } = useQuery<ApiKey[]>({
     queryKey: ['keys'],
@@ -440,6 +651,10 @@ export default function KeysPage() {
               <Button variant="outline" size="sm" onClick={() => setSyncAllOpen(true)}>
                 <RefreshCw className="size-3 mr-2" />
                 Sync all
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setPruneOpen(true)}>
+                <Trash2 className="size-3 mr-2" />
+                Clean up
               </Button>
               <Button variant="outline" size="sm" onClick={() => checkAll.mutate()} disabled={checkAll.isPending}>
                 {checkAll.isPending ? 'Checking…' : 'Check all'}
@@ -583,6 +798,17 @@ export default function KeysPage() {
           onImported={() => {
             queryClient.invalidateQueries({ queryKey: ['fallback'] })
             queryClient.invalidateQueries({ queryKey: ['keys'] })
+          }}
+        />
+      )}
+
+      {pruneOpen && (
+        <PruneModelsModal
+          onClose={() => setPruneOpen(false)}
+          onPruned={() => {
+            queryClient.invalidateQueries({ queryKey: ['fallback'] })
+            queryClient.invalidateQueries({ queryKey: ['keys'] })
+            queryClient.invalidateQueries({ queryKey: ['health'] })
           }}
         />
       )}
