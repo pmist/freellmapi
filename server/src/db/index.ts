@@ -45,6 +45,7 @@ export function initDb(dbPath?: string): Database.Database {
   migrateModelsV8(db);
   migrateModelsV9(db);
   migrateModelsV10(db);
+  migrateFallbackGroups(db);
   ensureUnifiedKey(db);
 
   console.log(`Database initialized at ${resolvedPath}`);
@@ -101,7 +102,8 @@ function createTables(db: Database.Database) {
       model_db_id INTEGER NOT NULL REFERENCES models(id),
       priority INTEGER NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
-      UNIQUE(model_db_id)
+      fallback_group TEXT NOT NULL DEFAULT 'auto',
+      UNIQUE(model_db_id, fallback_group)
     );
 
     CREATE TABLE IF NOT EXISTS settings (
@@ -919,6 +921,40 @@ function migrateModelsV10(db: Database.Database) {
     }
   });
   apply();
+}
+
+/**
+ * Migrates fallback_config: adds fallback_group column and fixes UNIQUE constraint
+ * from (model_db_id) to (model_db_id, fallback_group) so models can exist in multiple groups.
+ */
+function migrateFallbackGroups(db: Database.Database) {
+  // Check if the column already exists
+  const cols = db.prepare("PRAGMA table_info(fallback_config)").all() as { name: string }[];
+  if (cols.some(c => c.name === 'fallback_group')) return;
+
+  // SQLite doesn't support DROP CONSTRAINT — recreate the table
+  db.pragma('foreign_keys = OFF');
+  const migrate = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE fallback_config_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        model_db_id INTEGER NOT NULL REFERENCES models(id),
+        priority INTEGER NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        fallback_group TEXT NOT NULL DEFAULT 'auto',
+        UNIQUE(model_db_id, fallback_group)
+      );
+
+      INSERT INTO fallback_config_new (id, model_db_id, priority, enabled, fallback_group)
+      SELECT id, model_db_id, priority, enabled, 'auto' FROM fallback_config;
+
+      DROP TABLE fallback_config;
+
+      ALTER TABLE fallback_config_new RENAME TO fallback_config;
+    `);
+  });
+  migrate();
+  db.pragma('foreign_keys = ON');
 }
 
 export function removeModels(db: Database.Database, platform: string, modelDbIds: number[]) {
