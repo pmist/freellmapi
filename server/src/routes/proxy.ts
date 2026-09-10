@@ -207,6 +207,21 @@ function isRetryableError(err: any): boolean {
     || msg.includes('500') || msg.includes('internal server error');
 }
 
+/** True only for actual rate-limit / quota errors (not permanent errors like 401/403/404) */
+function isRateLimitError(err: any): boolean {
+  const msg = (err.message ?? '').toLowerCase();
+  return msg.includes('429') || msg.includes('rate limit') || msg.includes('too many requests')
+    || msg.includes('quota') || msg.includes('resource_exhausted');
+}
+
+/** Cooldown duration based on error type — long for rate limits, short for transient, minimal for permanent */
+function getCooldownMs(err: any, isOpencode: boolean): number {
+  if (isRateLimitError(err)) {
+    return isOpencode ? 8 * 60 * 60 * 1000 : 120_000; // 8hr OpenCode / 2min others
+  }
+  return 30_000; // 30s for other errors (401/403/404/connection) — just skip in this request
+}
+
 proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   const start = Date.now();
 
@@ -371,8 +386,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           if (shouldRetry) {
             const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
             skipKeys.add(skipId);
-            const cooldownMs = isOpencode ? 8 * 60 * 60 * 1000 : 120_000;
-            setCooldown(route.platform, route.modelId, route.keyId, cooldownMs);
+            setCooldown(route.platform, route.modelId, route.keyId, getCooldownMs(providerErr, isOpencode));
             recordRateLimitHit(route.modelDbId);
             lastError = providerErr;
             console.log(`[Proxy] ${providerErr.message.slice(0, 60)} from ${route.displayName}, falling back (attempt ${attempt + 1}/${MAX_RETRIES})`);
@@ -460,9 +474,8 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
         skipKeys.add(skipId);
         
-        // OpenCode models get an 8-hour cooldown on ANY error, others get 2 minutes on retryable errors
-        const cooldownMs = isOpencode ? 8 * 60 * 60 * 1000 : 120_000;
-        setCooldown(route.platform, route.modelId, route.keyId, cooldownMs);
+        // Cooldown: long for rate-limit errors, short for everything else
+        setCooldown(route.platform, route.modelId, route.keyId, getCooldownMs(err, isOpencode));
         
         recordRateLimitHit(route.modelDbId);
         lastError = err;
