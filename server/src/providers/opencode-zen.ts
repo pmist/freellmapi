@@ -282,7 +282,7 @@ export class OpenCodeZenProvider extends BaseProvider {
     const res = await this.fetchWithTimeout(`${this.baseUrl}/messages`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'x-api-key': apiKey,
         'Content-Type': 'application/json',
         'anthropic-version': '2023-06-01',
       },
@@ -550,7 +550,7 @@ export class OpenCodeZenProvider extends BaseProvider {
     const res = await this.fetchWithTimeout(`${this.baseUrl}/messages`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'x-api-key': apiKey,
         'Content-Type': 'application/json',
         'anthropic-version': '2023-06-01',
       },

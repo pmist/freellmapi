@@ -91,7 +91,9 @@ proxyRouter.get('/models', (_req: Request, res: Response) => {
   });
 });
 
-const MAX_RETRIES = 20;
+// Enough attempts to walk the entire eligible fallback chain (dead providers get
+// long cooldowns after the first pass, so later requests skip them quickly).
+const MAX_RETRIES = 50;
 
 // ── OpenAI-Compatible Content Parts (for multimodal / user messages) ──
 const textContentPartSchema = z.object({
@@ -214,12 +216,36 @@ function isRateLimitError(err: any): boolean {
     || msg.includes('quota') || msg.includes('resource_exhausted');
 }
 
-/** Cooldown duration based on error type — long for rate limits, short for transient, minimal for permanent */
+/** True for permanent model errors — the provider no longer serves this model id */
+function isModelMissingError(err: any): boolean {
+  const msg = (err.message ?? '').toLowerCase();
+  return msg.includes('not supported') || msg.includes('not found')
+    || msg.includes('no endpoints found') || msg.includes('model_not_found');
+}
+
+/** True for account-level auth / credit errors — the key has no balance or payment method */
+function isAuthOrCreditError(err: any): boolean {
+  const msg = (err.message ?? '').toLowerCase();
+  return msg.includes('no payment method') || msg.includes('insufficient balance')
+    || msg.includes('insufficient credits') || msg.includes('billing')
+    || msg.includes('autherror') || msg.includes('invalid api key')
+    || msg.includes('unauthorized') || msg.includes('missing api key');
+}
+
+/**
+ * Cooldown duration based on error type:
+ *  - model missing  → 6h (provider removed/renamed the model; permanent)
+ *  - auth/credits   → 30m (key has no balance; won't recover this request cycle)
+ *  - rate limit     → 8h OpenCode / 2m others
+ *  - transient      → 30s (5xx, timeout, connection reset)
+ */
 function getCooldownMs(err: any, isOpencode: boolean): number {
+  if (isModelMissingError(err)) return 6 * 60 * 60 * 1000;
+  if (isAuthOrCreditError(err)) return 30 * 60 * 1000;
   if (isRateLimitError(err)) {
-    return isOpencode ? 8 * 60 * 60 * 1000 : 120_000; // 8hr OpenCode / 2min others
+    return isOpencode ? 8 * 60 * 60 * 1000 : 120_000;
   }
-  return 30_000; // 30s for other errors (401/403/404/connection) — just skip in this request
+  return 30_000;
 }
 
 proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {

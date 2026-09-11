@@ -46,6 +46,7 @@ export function initDb(dbPath?: string): Database.Database {
   migrateModelsV9(db);
   migrateModelsV10(db);
   migrateFallbackGroups(db);
+  migrateModelsV11(db);
   ensureUnifiedKey(db);
 
   console.log(`Database initialized at ${resolvedPath}`);
@@ -955,6 +956,55 @@ function migrateFallbackGroups(db: Database.Database) {
   });
   migrate();
   db.pragma('foreign_keys = ON');
+}
+
+/**
+ * V11: Correct model ids against the live provider catalogues (probed 2026-09-11).
+ *
+ * OpenCode Zen: six seeded model ids no longer exist in GET /zen/v1/models, so
+ * every request that reaches them returns 401 "Model ... is not supported".
+ * The worst offender (minimax-m2.5-free) sat at fallback priority 1, burning an
+ * attempt on every single request. Disable them so the router skips straight to
+ * models that can actually answer.
+ *
+ * CLōD: two seeded ids are stale. "DeepSeek V3" -> 400 "Model not found";
+ * the live catalogue serves "DeepSeek V3.2". "Minimax M2.5" is superseded by
+ * "Minimax M2.7". Rename in place so existing fallback_config rows stay valid.
+ */
+function migrateModelsV11(db: Database.Database) {
+  const staleOpencode = [
+    'minimax-m2.5-free',
+    'claude-3-5-haiku',
+    'claude-opus-4-1',
+    'hy3-preview-free',
+    'ling-2.6-flash',
+    'nemotron-3-super-free',
+  ];
+
+  const apply = db.transaction(() => {
+    // Disable stale OpenCode models (both the model row and its fallback entry)
+    const disableModel = db.prepare('UPDATE models SET enabled = 0 WHERE platform = ? AND model_id = ?');
+    const disableFb = db.prepare(`
+      UPDATE fallback_config SET enabled = 0 WHERE model_db_id IN (
+        SELECT id FROM models WHERE platform = ? AND model_id = ?
+      )
+    `);
+    for (const modelId of staleOpencode) {
+      disableModel.run('opencode', modelId);
+      disableFb.run('opencode', modelId);
+    }
+
+    // Rename stale CLōD ids in place (keeps fallback_config.model_db_id valid)
+    db.prepare(`
+      UPDATE models SET model_id = 'DeepSeek V3.2', display_name = 'DeepSeek V3.2 (CLōD)'
+       WHERE platform = 'clod' AND model_id = 'DeepSeek V3'
+    `).run();
+    db.prepare(`
+      UPDATE models SET model_id = 'Minimax M2.7', display_name = 'MiniMax M2.7 (CLōD)'
+       WHERE platform = 'clod' AND model_id = 'Minimax M2.5'
+    `).run();
+  });
+  apply();
 }
 
 export function removeModels(db: Database.Database, platform: string, modelDbIds: number[]) {
