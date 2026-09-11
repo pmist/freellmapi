@@ -994,15 +994,39 @@ function migrateModelsV11(db: Database.Database) {
       disableFb.run('opencode', modelId);
     }
 
-    // Rename stale CLōD ids in place (keeps fallback_config.model_db_id valid)
-    db.prepare(`
-      UPDATE models SET model_id = 'DeepSeek V3.2', display_name = 'DeepSeek V3.2 (CLōD)'
-       WHERE platform = 'clod' AND model_id = 'DeepSeek V3'
-    `).run();
-    db.prepare(`
-      UPDATE models SET model_id = 'Minimax M2.7', display_name = 'MiniMax M2.7 (CLōD)'
-       WHERE platform = 'clod' AND model_id = 'Minimax M2.5'
-    `).run();
+    // Rename stale CLōD ids in place (keeps fallback_config.model_db_id valid).
+    // If a row with the target name already exists (from a prior partial run),
+    // delete the old row + its fallback entry first to avoid UNIQUE conflict.
+    const delFb = db.prepare('DELETE FROM fallback_config WHERE model_db_id = ?');
+    const delModel = db.prepare('DELETE FROM models WHERE id = ?');
+    const findTarget = db.prepare('SELECT id FROM models WHERE platform = ? AND model_id = ?');
+
+    const renames = [
+      { from: 'DeepSeek V3', to: 'DeepSeek V3.2', display: 'DeepSeek V3.2 (CLōD)' },
+      { from: 'Minimax M2.5', to: 'Minimax M2.7', display: 'MiniMax M2.7 (CLōD)' },
+    ];
+    for (const { from, to, display } of renames) {
+      const source = db.prepare('SELECT id FROM models WHERE platform = ? AND model_id = ?').get('clod', from) as { id: number } | undefined;
+      const target = findTarget.get('clod', to) as { id: number } | undefined;
+      if (source && target) {
+        // Both exist — merge fallback entries (skip conflicts), then delete source
+        const srcFb = db.prepare('SELECT fallback_group, priority, enabled FROM fallback_config WHERE model_db_id = ?').all(source.id) as Array<{ fallback_group: string; priority: number; enabled: number }>;
+        const tgtFb = db.prepare('SELECT fallback_group FROM fallback_config WHERE model_db_id = ?').all(target.id) as Array<{ fallback_group: string }>;
+        const tgtGroups = new Set(tgtFb.map(r => r.fallback_group));
+        for (const fb of srcFb) {
+          if (!tgtGroups.has(fb.fallback_group)) {
+            db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled, fallback_group) VALUES (?, ?, ?, ?)').run(target.id, fb.priority, fb.enabled, fb.fallback_group);
+          }
+          // else: target already has an entry for this group — keep the target's
+        }
+        delFb.run(source.id);
+        delModel.run(source.id);
+      } else if (source && !target) {
+        // Only source exists — rename it
+        db.prepare('UPDATE models SET model_id = ?, display_name = ? WHERE id = ?').run(to, display, source.id);
+      }
+      // If only target exists (or neither), nothing to do
+    }
   });
   apply();
 }
