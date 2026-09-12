@@ -206,7 +206,12 @@ function isRetryableError(err: any): boolean {
     || msg.includes('aborted') || msg.includes('timeout') || msg.includes('etimedout')
     || msg.includes('econnrefused') || msg.includes('econnreset')
     || msg.includes('503') || msg.includes('unavailable')
-    || msg.includes('500') || msg.includes('internal server error');
+    || msg.includes('500') || msg.includes('internal server error')
+    // Provider-side request-shape rejections. Providers differ in which request
+    // shapes they accept (e.g. Cloudflare rejects content-part arrays as
+    // "Bad input"), so a 400/422 from one provider is worth trying elsewhere.
+    || msg.includes('bad input') || msg.includes('invalid_request')
+    || msg.includes('invalid request');
 }
 
 /** True only for actual rate-limit / quota errors (not permanent errors like 401/403/404) */
@@ -230,6 +235,17 @@ function isAuthOrCreditError(err: any): boolean {
     || msg.includes('insufficient credits') || msg.includes('billing')
     || msg.includes('autherror') || msg.includes('invalid api key')
     || msg.includes('unauthorized') || msg.includes('missing api key');
+}
+
+/**
+ * Decides whether to advance to the next model/key/provider instead of returning
+ * the error to the client. Deliberately includes errors that are terminal for
+ * *this* route but not for the chain: a model the provider no longer serves, or
+ * a key/account that is unauthorized or out of credits, should fall through to
+ * another provider rather than fail the request.
+ */
+function isFallbackEligible(err: any): boolean {
+  return isRetryableError(err) || isModelMissingError(err) || isAuthOrCreditError(err);
 }
 
 /**
@@ -396,19 +412,27 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
 
     try {
       if (stream) {
-        // Streaming - start the provider FIRST to catch errors before sending headers
-        let gen: AsyncGenerator<any>;
+        // Streaming - pull the first chunk BEFORE sending SSE headers.
+        // streamChatCompletion is an async generator, so merely calling it runs
+        // no code; the HTTP request (and any provider error) only happens on the
+        // first next(). Awaiting that first chunk here lets us fall back to
+        // another model/key on pre-stream failures instead of leaking them to
+        // the client as a terminal SSE error.
+        let gen: AsyncGenerator<any> | undefined;
+        let firstChunk: any;
         try {
           gen = route.provider.streamChatCompletion(
             route.apiKey, messages, route.modelId,
             { temperature, max_tokens, top_p, stop, frequency_penalty, presence_penalty, seed, user, tools, tool_choice, parallel_tool_calls },
           );
+          const first = await gen.next();
+          if (!first.done) firstChunk = first.value;
         } catch (providerErr: any) {
           // Provider rejected before streaming started - can retry
           const latency = Date.now() - start;
           logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, providerErr.message);
           const isOpencode = route.platform === 'opencode';
-          const shouldRetry = isOpencode || isRetryableError(providerErr);
+          const shouldRetry = isOpencode || isFallbackEligible(providerErr);
           if (shouldRetry) {
             const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
             skipKeys.add(skipId);
@@ -438,17 +462,25 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
 
         let totalOutputTokens = 0;
+        const writeChunk = (chunk: any) => {
+          const text = chunk.choices[0]?.delta?.content ?? '';
+          totalOutputTokens += Math.ceil(text.length / 4);
+          if (parsed.data.model) {
+            chunk.model = parsed.data.model;
+          }
+          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        };
+
         try {
-          for await (const chunk of gen) {
-            const text = chunk.choices[0]?.delta?.content ?? '';
-            totalOutputTokens += Math.ceil(text.length / 4);
-            if (parsed.data.model) {
-              chunk.model = parsed.data.model;
+          if (firstChunk) writeChunk(firstChunk);
+          if (gen) {
+            for await (const chunk of gen) {
+              writeChunk(chunk);
             }
-            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
           }
         } catch (streamErr: any) {
-          // Mid-stream error - end gracefully with SSE error event
+          // Mid-stream error AFTER headers were sent - can't switch providers now,
+          // so end gracefully with an SSE error event.
           console.log(`[Proxy] Stream error from ${route.displayName}: ${streamErr.message.slice(0, 60)}`);
           res.write(`data: ${JSON.stringify({ error: { message: `Stream error: ${streamErr.message}`, type: 'stream_error' } })}\n\n`);
         }
@@ -493,7 +525,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message);
 
       const isOpencode = route.platform === 'opencode';
-      const shouldRetry = isOpencode || isRetryableError(err);
+      const shouldRetry = isOpencode || isFallbackEligible(err);
 
       if (shouldRetry) {
         // Put this model+key on cooldown and try the next one

@@ -20,12 +20,23 @@ export class CloudflareProvider extends BaseProvider {
     return { accountId: apiKey.slice(0, sep), token: apiKey.slice(sep + 1) };
   }
 
-  // Cloudflare's OpenAI-compat endpoint rejects `content: null` on assistant
-  // messages that carry tool_calls, even though the OpenAI spec allows it.
+  // Cloudflare's OpenAI-compat endpoint requires every message `content` to be a
+  // plain string. It rejects `content: null` on assistant messages that carry
+  // tool_calls (which the OpenAI spec allows), and it rejects the OpenAI
+  // content-part array form (`[{ type: 'text', text: '...' }]`) that agent
+  // clients send. Flatten both to a single string.
   private normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
-    return messages.map(m =>
-      m.content === null ? { ...m, content: '' } : m,
-    );
+    return messages.map(m => {
+      if (m.content === null) return { ...m, content: '' };
+      if (Array.isArray(m.content)) {
+        const text = m.content
+          .map(part => (typeof part.text === 'string' ? part.text : ''))
+          .filter(Boolean)
+          .join('\n');
+        return { ...m, content: text };
+      }
+      return m;
+    });
   }
 
   async chatCompletion(

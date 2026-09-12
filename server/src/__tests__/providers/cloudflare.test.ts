@@ -92,4 +92,38 @@ describe('CloudflareProvider', () => {
     expect(capturedBody.messages[1].content).toBe('');
     expect(capturedBody.messages[1].tool_calls).toHaveLength(1);
   });
+
+  it('should flatten content-part arrays to a string (CF rejects arrays)', async () => {
+    let capturedBody: any = null;
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      capturedBody = JSON.parse((init as any).body);
+      return {
+        ok: true,
+        json: () => Promise.resolve({
+          id: 'chatcmpl-cf',
+          object: 'chat.completion',
+          created: 123,
+          model: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }),
+      } as any;
+    });
+
+    await provider.chatCompletion(
+      'abc123:token',
+      [
+        { role: 'system', content: [{ type: 'text', text: 'Be terse.' }] },
+        { role: 'user', content: [{ type: 'text', text: 'Hello' }, { type: 'text', text: 'World' }] },
+      ],
+      '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+    );
+
+    expect(capturedBody.messages[0].content).toBe('Be terse.');
+    expect(capturedBody.messages[1].content).toBe('Hello\nWorld');
+    // Every content must be a plain string for Cloudflare's schema.
+    for (const m of capturedBody.messages) {
+      expect(typeof m.content).toBe('string');
+    }
+  });
 });
