@@ -238,14 +238,37 @@ function isAuthOrCreditError(err: any): boolean {
 }
 
 /**
+ * Extract the HTTP status a provider reported. Every provider throws errors in
+ * the form `<Name> API error <status>: ...`, so the status is parseable even
+ * though we do not thread a structured error type through.
+ */
+function providerHttpStatus(err: any): number | null {
+  const match = /error\s+(\d{3})\b/i.exec(err?.message ?? '');
+  return match ? parseInt(match[1], 10) : null;
+}
+
+/** True for transport-level failures (no HTTP response at all). */
+function isNetworkError(err: any): boolean {
+  const msg = (err.message ?? '').toLowerCase();
+  return msg.includes('fetch failed') || msg.includes('network')
+    || msg.includes('enotfound') || msg.includes('eai_again')
+    || msg.includes('socket hang up') || msg.includes('other side closed')
+    || msg.includes('terminated');
+}
+
+/**
  * Decides whether to advance to the next model/key/provider instead of returning
- * the error to the client. Deliberately includes errors that are terminal for
- * *this* route but not for the chain: a model the provider no longer serves, or
- * a key/account that is unauthorized or out of credits, should fall through to
- * another provider rather than fail the request.
+ * the error to the client. Any non-2xx provider response (or transport failure)
+ * is eligible: if one provider cannot serve the request, the configured
+ * fallback sequence should be tried before failing the caller. Errors that are
+ * terminal for *this* route but not the chain (removed model, unauthorized or
+ * out-of-credit key) are also eligible.
  */
 function isFallbackEligible(err: any): boolean {
-  return isRetryableError(err) || isModelMissingError(err) || isAuthOrCreditError(err);
+  const status = providerHttpStatus(err);
+  if (status !== null && (status < 200 || status >= 300)) return true;
+  return isRetryableError(err) || isModelMissingError(err) || isAuthOrCreditError(err)
+    || isNetworkError(err);
 }
 
 /**

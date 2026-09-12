@@ -27,6 +27,8 @@ const PLATFORMS: { value: Platform; label: string }[] = [
   { value: 'opencode', label: 'OpenCode Zen' },
   { value: 'clod', label: 'CLōD' },
   { value: 'deepseek', label: 'DeepSeek' },
+  { value: 'kilocode', label: 'Kilo Code' },
+  { value: 'zai', label: 'Z.AI' },
 ]
 
 const statusDot: Record<string, string> = {

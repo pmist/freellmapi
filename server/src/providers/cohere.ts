@@ -5,7 +5,10 @@ import type {
 } from '@freellmapi/shared/types.js';
 import { BaseProvider, type CompletionOptions } from './base.js';
 
+// OpenAI-compatibility surface (chat only).
 const API_BASE = 'https://api.cohere.ai/compatibility/v1';
+// The compatibility surface has no documented /models endpoint; use the native one.
+const NATIVE_BASE = 'https://api.cohere.ai/v1';
 
 export class CohereProvider extends BaseProvider {
   readonly platform = 'cohere' as const;
@@ -31,7 +34,7 @@ export class CohereProvider extends BaseProvider {
         user: options?.user,
         tools: options?.tools,
         tool_choice: options?.tool_choice,
-        parallel_tool_calls: options?.parallel_tool_calls,
+        // NOTE: Cohere's compatibility API does not support parallel_tool_calls.
       };
     }
 
@@ -80,7 +83,7 @@ export class CohereProvider extends BaseProvider {
       user: options?.user,
       tools: options?.tools,
       tool_choice: options?.tool_choice,
-      parallel_tool_calls: options?.parallel_tool_calls,
+      // NOTE: Cohere's compatibility API does not support parallel_tool_calls.
       stream: true,
     };
 
@@ -140,7 +143,7 @@ export class CohereProvider extends BaseProvider {
 
   async validateKey(apiKey: string): Promise<boolean> {
     try {
-      const res = await this.fetchWithTimeout(`${API_BASE}/models`, {
+      const res = await this.fetchWithTimeout(`${NATIVE_BASE}/models`, {
         method: 'GET',
         headers: { 'Authorization': `Bearer ${apiKey}` },
       }, 10000);
@@ -152,7 +155,7 @@ export class CohereProvider extends BaseProvider {
 
   async getModels(apiKey: string): Promise<Array<{ id: string; name: string }>> {
     try {
-      const res = await this.fetchWithTimeout(`${API_BASE}/models`, {
+      const res = await this.fetchWithTimeout(`${NATIVE_BASE}/models`, {
         method: 'GET',
         headers: { 'Authorization': `Bearer ${apiKey}` },
       }, 10000);

@@ -2,6 +2,7 @@ import type {
   ChatMessage,
   ChatCompletionResponse,
   ChatCompletionChunk,
+  ChatToolCall,
   Platform,
 } from '@freellmapi/shared/types.js';
 import { BaseProvider, type CompletionOptions } from './base.js';
@@ -16,6 +17,194 @@ function extractMessageText(content: string | null | Array<Record<string, unknow
       .join(' ');
   }
   return '';
+}
+
+function safeParseObject(raw: string): Record<string, unknown> {
+  try { const p = JSON.parse(raw); return p && typeof p === 'object' && !Array.isArray(p) ? p as Record<string, unknown> : { value: p }; }
+  catch { return { value: raw }; }
+}
+
+function mapAnthropicStopReason(reason?: string): 'tool_calls' | 'length' | 'stop' {
+  if (reason === 'tool_use') return 'tool_calls';
+  if (reason === 'max_tokens') return 'length';
+  return 'stop';
+}
+
+/** Translate OpenAI messages to Anthropic Messages API shape (system separated out). */
+function toAnthropicMessages(messages: ChatMessage[]): { system?: string; messages: any[] } {
+  const systemText = messages
+    .filter(m => m.role === 'system')
+    .map(m => extractMessageText(m.content))
+    .filter(t => t.length > 0)
+    .join('\n\n');
+
+  const out: any[] = [];
+  for (const m of messages) {
+    if (m.role === 'system') continue;
+
+    if (m.role === 'assistant') {
+      const blocks: any[] = [];
+      const text = extractMessageText(m.content);
+      if (text.length > 0) blocks.push({ type: 'text', text });
+      for (const tc of m.tool_calls ?? []) {
+        blocks.push({
+          type: 'tool_use',
+          id: tc.id,
+          name: tc.function.name,
+          input: safeParseObject(tc.function.arguments),
+        });
+      }
+      out.push({ role: 'assistant', content: blocks });
+    } else if (m.role === 'tool') {
+      out.push({
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: m.tool_call_id,
+          content: extractMessageText(m.content),
+        }],
+      });
+    } else {
+      out.push({ role: 'user', content: extractMessageText(m.content) });
+    }
+  }
+
+  return { system: systemText.length > 0 ? systemText : undefined, messages: out };
+}
+
+/** Translate OpenAI messages to Gemini `contents` + `systemInstruction`. */
+function toGeminiContents(messages: ChatMessage[]): { contents: any[]; systemInstruction?: any } {
+  const systemText = messages
+    .filter(m => m.role === 'system')
+    .map(m => extractMessageText(m.content))
+    .filter(t => t.length > 0)
+    .join('\n\n');
+
+  const toolNameByCallId = new Map<string, string>();
+  for (const m of messages) {
+    for (const tc of m.tool_calls ?? []) {
+      toolNameByCallId.set(tc.id, tc.function.name);
+    }
+  }
+
+  const contents: any[] = [];
+  for (const m of messages) {
+    if (m.role === 'system') continue;
+
+    if (m.role === 'assistant') {
+      const parts: any[] = [];
+      const text = extractMessageText(m.content);
+      if (text.length > 0) parts.push({ text });
+      for (const tc of m.tool_calls ?? []) {
+        parts.push({
+          functionCall: {
+            id: tc.id,
+            name: tc.function.name,
+            args: safeParseObject(tc.function.arguments),
+          },
+        });
+      }
+      if (parts.length > 0) contents.push({ role: 'model', parts });
+    } else if (m.role === 'tool') {
+      const name = m.name ?? (m.tool_call_id ? toolNameByCallId.get(m.tool_call_id) : undefined) ?? 'tool';
+      contents.push({
+        role: 'user',
+        parts: [{
+          functionResponse: {
+            id: m.tool_call_id,
+            name,
+            response: safeParseObject(extractMessageText(m.content)),
+          },
+        }],
+      });
+    } else {
+      contents.push({ role: 'user', parts: [{ text: extractMessageText(m.content) }] });
+    }
+  }
+
+  return {
+    contents,
+    systemInstruction: systemText.length > 0 ? { parts: [{ text: systemText }] } : undefined,
+  };
+}
+
+function extractGeminiText(parts: any[]): string {
+  return parts.map(p => (typeof p.text === 'string' ? p.text : '')).join('');
+}
+
+function extractGeminiToolCalls(parts: any[]): ChatToolCall[] {
+  const calls: ChatToolCall[] = [];
+  for (const part of parts) {
+    if (!part.functionCall?.name) continue;
+    const id = part.functionCall.id ?? `call_${Date.now()}_${calls.length}`;
+    calls.push({
+      index: calls.length,
+      id,
+      type: 'function',
+      function: {
+        name: part.functionCall.name,
+        arguments: JSON.stringify(part.functionCall.args ?? {}),
+      },
+    });
+  }
+  return calls;
+}
+
+/** Translate OpenAI messages to the Responses API `input` items + `instructions`. */
+function toResponsesInput(messages: ChatMessage[]): { instructions?: string; input: any[] } {
+  const instructions = messages
+    .filter(m => m.role === 'system')
+    .map(m => extractMessageText(m.content))
+    .filter(t => t.length > 0)
+    .join('\n\n');
+
+  const input: any[] = [];
+  for (const m of messages) {
+    if (m.role === 'system') continue;
+
+    if (m.role === 'tool') {
+      input.push({
+        type: 'function_call_output',
+        call_id: m.tool_call_id,
+        output: extractMessageText(m.content),
+      });
+      continue;
+    }
+
+    if (m.role === 'assistant') {
+      const text = extractMessageText(m.content);
+      if (text.length > 0) input.push({ type: 'message', role: 'assistant', content: text });
+      for (const tc of m.tool_calls ?? []) {
+        input.push({
+          type: 'function_call',
+          call_id: tc.id,
+          name: tc.function.name,
+          arguments: tc.function.arguments,
+        });
+      }
+      continue;
+    }
+
+    input.push({ type: 'message', role: 'user', content: extractMessageText(m.content) });
+  }
+
+  return { instructions: instructions.length > 0 ? instructions : undefined, input };
+}
+
+/** Responses API tools are flat: `{type:'function', name, description, parameters}`. */
+function toResponsesTools(tools?: any[]): any {
+  if (!tools || tools.length === 0) return undefined;
+  return tools.map(t => {
+    const fn = t.function ?? t;
+    const out: Record<string, unknown> = {
+      type: 'function',
+      name: fn.name,
+      description: fn.description,
+      parameters: fn.parameters,
+    };
+    if (fn.strict !== undefined) out.strict = fn.strict;
+    return out;
+  });
 }
 
 type ZenEndpointType = 'chat' | 'responses' | 'messages' | 'gemini';
@@ -217,18 +406,18 @@ export class OpenCodeZenProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
+    const { instructions, input } = toResponsesInput(messages);
+
     const reqBody: Record<string, unknown> = {
       model: modelId,
-      input: messages,
+      input,
+      ...(instructions ? { instructions } : {}),
       temperature: options?.temperature,
       max_output_tokens: options?.max_tokens,
       top_p: options?.top_p,
-      stop: options?.stop,
-      frequency_penalty: options?.frequency_penalty,
-      presence_penalty: options?.presence_penalty,
       seed: options?.seed,
       user: options?.user,
-      tools: options?.tools,
+      tools: toResponsesTools(options?.tools),
       tool_choice: options?.tool_choice,
       parallel_tool_calls: options?.parallel_tool_calls,
     };
@@ -262,13 +451,11 @@ export class OpenCodeZenProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
-    const anthropicMessages = messages.map(m => ({
-      role: m.role === 'assistant' ? 'assistant' : 'user',
-      content: extractMessageText(m.content),
-    }));
+    const { system, messages: anthropicMessages } = toAnthropicMessages(messages);
 
     const reqBody: Record<string, unknown> = {
       model: modelId,
+      ...(system ? { system } : {}),
       messages: anthropicMessages,
       max_tokens: options?.max_tokens || 4096,
       temperature: options?.temperature,
@@ -309,11 +496,11 @@ export class OpenCodeZenProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
+    const { contents, systemInstruction } = toGeminiContents(messages);
+
     const reqBody: Record<string, unknown> = {
-      contents: messages.map(m => ({
-        role: m.role === 'user' ? 'user' : 'model',
-        parts: [{ text: extractMessageText(m.content) }],
-      })),
+      contents,
+      ...(systemInstruction ? { systemInstruction } : {}),
       generationConfig: {
         temperature: options?.temperature,
         maxOutputTokens: options?.max_tokens,
@@ -327,7 +514,7 @@ export class OpenCodeZenProvider extends BaseProvider {
     const res = await this.fetchWithTimeout(`${this.baseUrl}/models/${modelId}:generateContent`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'x-goog-api-key': apiKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(reqBody),
@@ -348,7 +535,31 @@ export class OpenCodeZenProvider extends BaseProvider {
   }
 
   private transformResponsesToChatCompletion(data: any, modelId: string): ChatCompletionResponse {
-    const text = data.output?.text || data.output?.message?.content || '';
+    const textParts: string[] = [];
+    const toolCalls: ChatToolCall[] = [];
+
+    for (const item of data.output ?? []) {
+      if (item.type === 'message') {
+        for (const part of item.content ?? []) {
+          if (part.type === 'output_text' && typeof part.text === 'string') {
+            textParts.push(part.text);
+          }
+        }
+      } else if (item.type === 'function_call') {
+        toolCalls.push({
+          index: toolCalls.length,
+          id: item.call_id,
+          type: 'function',
+          function: { name: item.name, arguments: item.arguments ?? '{}' },
+        });
+      }
+    }
+
+    const text = textParts.join('');
+    const finish_reason = toolCalls.length > 0
+      ? 'tool_calls'
+      : (data.incomplete_details?.reason === 'max_output_tokens' ? 'length' : 'stop');
+
     return {
       id: data.id || `zen-${Date.now()}`,
       object: 'chat.completion',
@@ -358,21 +569,39 @@ export class OpenCodeZenProvider extends BaseProvider {
         index: 0,
         message: {
           role: 'assistant',
-          content: text,
+          content: text.length > 0 ? text : null,
+          ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
         },
-        finish_reason: 'stop',
+        finish_reason,
       }],
       usage: {
         prompt_tokens: data.usage?.input_tokens || 0,
         completion_tokens: data.usage?.output_tokens || 0,
-        total_tokens: (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0),
+        total_tokens: data.usage?.total_tokens ?? ((data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0)),
       },
       _routed_via: { platform: this.platform, model: modelId },
     };
   }
 
   private transformMessagesToChatCompletion(data: any, modelId: string): ChatCompletionResponse {
-    const text = data.content?.[0]?.text || '';
+    const textParts: string[] = [];
+    const toolCalls: ChatToolCall[] = [];
+
+    for (const block of data.content ?? []) {
+      if (block.type === 'text' && typeof block.text === 'string') {
+        textParts.push(block.text);
+      } else if (block.type === 'tool_use') {
+        toolCalls.push({
+          index: toolCalls.length,
+          id: block.id,
+          type: 'function',
+          function: { name: block.name, arguments: JSON.stringify(block.input ?? {}) },
+        });
+      }
+    }
+
+    const text = textParts.join('');
+
     return {
       id: data.id || `zen-${Date.now()}`,
       object: 'chat.completion',
@@ -382,9 +611,10 @@ export class OpenCodeZenProvider extends BaseProvider {
         index: 0,
         message: {
           role: 'assistant',
-          content: text,
+          content: text.length > 0 ? text : null,
+          ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
         },
-        finish_reason: data.stop_reason || 'stop',
+        finish_reason: mapAnthropicStopReason(data.stop_reason),
       }],
       usage: {
         prompt_tokens: data.usage?.input_tokens || 0,
@@ -396,7 +626,10 @@ export class OpenCodeZenProvider extends BaseProvider {
   }
 
   private transformGeminiToChatCompletion(data: any, modelId: string): ChatCompletionResponse {
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const parts = data.candidates?.[0]?.content?.parts ?? [];
+    const text = extractGeminiText(parts);
+    const toolCalls = extractGeminiToolCalls(parts);
+
     return {
       id: data.name || `zen-${Date.now()}`,
       object: 'chat.completion',
@@ -406,14 +639,15 @@ export class OpenCodeZenProvider extends BaseProvider {
         index: 0,
         message: {
           role: 'assistant',
-          content: text,
+          content: text.length > 0 ? text : null,
+          ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
         },
-        finish_reason: data.candidates?.[0]?.finishReason?.toLowerCase() || 'stop',
+        finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop',
       }],
       usage: {
         prompt_tokens: data.usageMetadata?.promptTokenCount || 0,
         completion_tokens: data.usageMetadata?.candidatesTokenCount || 0,
-        total_tokens: (data.usageMetadata?.promptTokenCount || 0) + (data.usageMetadata?.candidatesTokenCount || 0),
+        total_tokens: data.usageMetadata?.totalTokenCount ?? ((data.usageMetadata?.promptTokenCount || 0) + (data.usageMetadata?.candidatesTokenCount || 0)),
       },
       _routed_via: { platform: this.platform, model: modelId },
     };
@@ -441,6 +675,7 @@ export class OpenCodeZenProvider extends BaseProvider {
           delta: {
             role: 'assistant',
             content: typeof response.choices[0].message.content === 'string' ? response.choices[0].message.content : undefined,
+            ...(response.choices[0].message.tool_calls ? { tool_calls: response.choices[0].message.tool_calls } : {}),
           },
           finish_reason: response.choices[0].finish_reason,
         }],
@@ -459,6 +694,7 @@ export class OpenCodeZenProvider extends BaseProvider {
           delta: {
             role: 'assistant',
             content: typeof response.choices[0].message.content === 'string' ? response.choices[0].message.content : undefined,
+            ...(response.choices[0].message.tool_calls ? { tool_calls: response.choices[0].message.tool_calls } : {}),
           },
           finish_reason: response.choices[0].finish_reason,
         }],
@@ -542,10 +778,7 @@ export class OpenCodeZenProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): AsyncGenerator<ChatCompletionChunk> {
-    const anthropicMessages = messages.map(m => ({
-      role: m.role === 'assistant' ? 'assistant' : 'user',
-      content: extractMessageText(m.content),
-    }));
+    const { system, messages: anthropicMessages } = toAnthropicMessages(messages);
 
     const res = await this.fetchWithTimeout(`${this.baseUrl}/messages`, {
       method: 'POST',
@@ -556,6 +789,7 @@ export class OpenCodeZenProvider extends BaseProvider {
       },
       body: JSON.stringify({
         model: modelId,
+        ...(system ? { system } : {}),
         messages: anthropicMessages,
         max_tokens: options?.max_tokens || 4096,
         temperature: options?.temperature,
@@ -577,7 +811,19 @@ export class OpenCodeZenProvider extends BaseProvider {
     if (!reader) throw new Error('No response body');
 
     const decoder = new TextDecoder();
+    const id = `zen-${Date.now()}`;
     let buffer = '';
+
+    const makeChunk = (
+      delta: ChatCompletionChunk['choices'][0]['delta'],
+      finish_reason: string | null = null,
+    ): ChatCompletionChunk => ({
+      id,
+      object: 'chat.completion.chunk',
+      created: Math.floor(Date.now() / 1000),
+      model: modelId,
+      choices: [{ index: 0, delta, finish_reason }],
+    });
 
     while (true) {
       const { done, value } = await reader.read();
@@ -594,19 +840,31 @@ export class OpenCodeZenProvider extends BaseProvider {
         if (data === '[DONE]' || data === '') continue;
         try {
           const parsed = JSON.parse(data);
-          const text = parsed.delta?.text || parsed.content_block?.delta?.text || '';
-          if (text) {
-            yield {
-              id: parsed.message || `zen-${Date.now()}`,
-              object: 'chat.completion.chunk',
-              created: Math.floor(Date.now() / 1000),
-              model: modelId,
-              choices: [{
-                index: 0,
-                delta: { role: 'assistant', content: text },
-                finish_reason: null,
+
+          if (parsed.type === 'content_block_start' && parsed.content_block?.type === 'tool_use') {
+            yield makeChunk({
+              role: 'assistant',
+              tool_calls: [{
+                index: parsed.index,
+                id: parsed.content_block.id,
+                type: 'function',
+                function: { name: parsed.content_block.name, arguments: '' },
               }],
-            };
+            });
+          } else if (parsed.type === 'content_block_delta' && parsed.delta?.type === 'text_delta') {
+            yield makeChunk({ role: 'assistant', content: parsed.delta.text });
+          } else if (parsed.type === 'content_block_delta' && parsed.delta?.type === 'input_json_delta') {
+            yield makeChunk({
+              role: 'assistant',
+              tool_calls: [{
+                index: parsed.index,
+                function: { arguments: parsed.delta.partial_json },
+              } as unknown as ChatToolCall],
+            });
+          } else if (parsed.type === 'message_delta') {
+            yield makeChunk({}, mapAnthropicStopReason(parsed.delta?.stop_reason));
+          } else if (parsed.type === 'message_stop') {
+            return;
           }
         } catch {
           // Skip malformed chunks

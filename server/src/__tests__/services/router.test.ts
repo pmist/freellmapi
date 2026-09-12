@@ -96,4 +96,32 @@ describe('Router', () => {
     const result = routeRequest();
     expect(result.platform).toBe('groq');
   });
+
+  it('follows the configured auto sequence when no group is specified', () => {
+    const db = getDb();
+
+    // Two groups, opposite orders, same two models.
+    db.prepare('DELETE FROM fallback_config').run();
+    const google = db.prepare("SELECT id FROM models WHERE platform = 'google' AND enabled = 1 ORDER BY intelligence_rank LIMIT 1").get() as { id: number };
+    const groq = db.prepare("SELECT id FROM models WHERE platform = 'groq' AND enabled = 1 ORDER BY intelligence_rank LIMIT 1").get() as { id: number };
+
+    const insert = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled, fallback_group) VALUES (?, ?, 1, ?)');
+    insert.run(google.id, 1, 'auto');    // auto: google first
+    insert.run(groq.id, 2, 'auto');
+    insert.run(groq.id, 1, 'planning');  // planning: groq first
+    insert.run(google.id, 2, 'planning');
+
+    for (const platform of ['google', 'groq']) {
+      const k = encrypt(`${platform}-seq-key`);
+      db.prepare(`
+        INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(platform, 'test', k.encrypted, k.iv, k.authTag, 'healthy', 1);
+    }
+
+    // No group must use the configured 'auto' sequence, not a mix of all groups.
+    expect(routeRequest().platform).toBe('google');
+    // An explicit group must use that group's sequence.
+    expect(routeRequest(1000, undefined, undefined, 'planning').platform).toBe('groq');
+  });
 });

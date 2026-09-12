@@ -111,6 +111,63 @@ describe('OpenAICompatProvider', () => {
   });
 });
 
+describe('OpenAICompatProvider - per-provider request adaptation', () => {
+  async function captureBody(provider: OpenAICompatProvider, messages: any[], options?: any) {
+    let body: any = null;
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      body = JSON.parse((init as any).body);
+      return {
+        ok: true,
+        json: () => Promise.resolve({
+          id: 'id', object: 'chat.completion', created: 1, model: 'm',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        }),
+      } as any;
+    });
+    await provider.chatCompletion('k', messages, 'm', options);
+    return body;
+  }
+
+  it('maps seed to random_seed for Mistral (not seed)', async () => {
+    const provider = new OpenAICompatProvider({
+      platform: 'mistral', name: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', seedField: 'random_seed',
+    });
+    const body = await captureBody(provider, [{ role: 'user', content: 'hi' }], { seed: 42 });
+    expect(body.random_seed).toBe(42);
+    expect(body.seed).toBeUndefined();
+  });
+
+  it('omits seed entirely when the provider does not support it', async () => {
+    const provider = new OpenAICompatProvider({
+      platform: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', seedField: null,
+    });
+    const body = await captureBody(provider, [{ role: 'user', content: 'hi' }], { seed: 7 });
+    expect(body.seed).toBeUndefined();
+    expect(body.random_seed).toBeUndefined();
+  });
+
+  it('uses max_completion_tokens and drops messages[].name for Groq', async () => {
+    const provider = new OpenAICompatProvider({
+      platform: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1',
+      maxTokensField: 'max_completion_tokens', dropMessageName: true,
+    });
+    const body = await captureBody(provider, [{ role: 'user', content: 'hi', name: 'bob' }], { max_tokens: 128 });
+    expect(body.max_completion_tokens).toBe(128);
+    expect(body.max_tokens).toBeUndefined();
+    expect(body.messages[0].name).toBeUndefined();
+  });
+
+  it('drops explicitly unsupported params', async () => {
+    const provider = new OpenAICompatProvider({
+      platform: 'sambanova', name: 'SambaNova', baseUrl: 'https://api.sambanova.ai/v1',
+      dropParams: ['parallel_tool_calls'],
+    });
+    const body = await captureBody(provider, [{ role: 'user', content: 'hi' }], { parallel_tool_calls: true });
+    expect(body.parallel_tool_calls).toBeUndefined();
+  });
+});
+
 describe('OpenAICompatProvider - platform instances', () => {
   const platforms = [
     { platform: 'sambanova', name: 'SambaNova', baseUrl: 'https://api.sambanova.ai/v1' },

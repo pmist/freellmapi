@@ -134,24 +134,37 @@ export function getAllPenalties(): Array<{ modelDbId: number; count: number; pen
 export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, preferredModelDbId?: number, group?: string): RouteResult {
   const db = getDb();
 
-  // Get fallback chain ordered by priority, optionally filtered by group
+  // The configured sequence is per fallback group. Requests without an explicit
+  // group use the 'auto' sequence (the default group in the UI); previously they
+  // mixed every group's rows together, which ignored the configured order.
   // NOTE: We avoid `?1 IS NULL` pattern because better-sqlite3 fails with
   // "Too many parameter values were provided" when binding null to numbered params.
-  let fallbackChain: FallbackRow[];
-  if (group) {
-    fallbackChain = db.prepare(`
-      SELECT fc.model_db_id, fc.priority, fc.enabled
-      FROM fallback_config fc
-      WHERE fc.fallback_group = ?
-      ORDER BY fc.priority ASC
-    `).all(group) as FallbackRow[];
-  } else {
+  const selectedGroup = group ?? 'auto';
+  let fallbackChain = db.prepare(`
+    SELECT fc.model_db_id, fc.priority, fc.enabled
+    FROM fallback_config fc
+    WHERE fc.fallback_group = ?
+    ORDER BY fc.priority ASC
+  `).all(selectedGroup) as FallbackRow[];
+
+  // If 'auto' was never configured (only explicit groups exist), fall back to
+  // the legacy behaviour of considering every configured row.
+  if (fallbackChain.length === 0 && !group) {
     fallbackChain = db.prepare(`
       SELECT fc.model_db_id, fc.priority, fc.enabled
       FROM fallback_config fc
       ORDER BY fc.priority ASC
     `).all() as FallbackRow[];
   }
+
+  // A model can belong to several groups; keep only its best-priority row so the
+  // same model is never attempted twice in a single routing pass.
+  const seenModels = new Set<number>();
+  fallbackChain = fallbackChain.filter(entry => {
+    if (seenModels.has(entry.model_db_id)) return false;
+    seenModels.add(entry.model_db_id);
+    return true;
+  });
 
   // Apply dynamic penalties: sort by (base priority + penalty)
   const sortedChain = fallbackChain.map(entry => ({

@@ -56,6 +56,22 @@ function normalizeGeminiArgs(args: unknown): string {
   return JSON.stringify(args ?? {});
 }
 
+/**
+ * Flatten an OpenAI message `content` field to plain text. Handles the
+ * content-part array form (`[{ type: 'text', text: '...' }]`) that agent clients
+ * send, in addition to plain strings. Non-text parts (e.g. images) are dropped.
+ */
+function toOpenAIText(content: ChatMessage['content']): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map(part => (typeof part.text === 'string' ? part.text : ''))
+      .filter(Boolean)
+      .join('\n');
+  }
+  return '';
+}
+
 function toGeminiFinishReason(finishReason?: string): string {
   const r = (finishReason ?? '').toUpperCase();
   if (!r) return 'stop';
@@ -126,8 +142,9 @@ function toGeminiToolConfig(toolChoice?: ChatToolChoice): { functionCallingConfi
 // Translate OpenAI messages to Gemini format
 function toGeminiContents(messages: ChatMessage[]) {
   const systemMessages = messages
-    .filter(m => m.role === 'system' && typeof m.content === 'string' && m.content.length > 0)
-    .map(m => m.content as string);
+    .filter(m => m.role === 'system')
+    .map(m => toOpenAIText(m.content))
+    .filter(text => text.length > 0);
 
   const toolNameByCallId = new Map<string, string>();
   for (const m of messages) {
@@ -142,8 +159,9 @@ function toGeminiContents(messages: ChatMessage[]) {
       if (m.role === 'assistant') {
         const parts: GeminiPart[] = [];
 
-        if (typeof m.content === 'string' && m.content.length > 0) {
-          parts.push({ text: m.content });
+        const assistantText = toOpenAIText(m.content);
+        if (assistantText.length > 0) {
+          parts.push({ text: assistantText });
         }
 
         for (const call of m.tool_calls ?? []) {
@@ -168,7 +186,7 @@ function toGeminiContents(messages: ChatMessage[]) {
         if (!toolCallId) return null;
 
         const toolName = m.name ?? toolNameByCallId.get(toolCallId) ?? 'tool';
-        const response = safeParseObject(typeof m.content === 'string' ? m.content : '');
+        const response = safeParseObject(toOpenAIText(m.content));
 
         return {
           role: 'user',
@@ -184,7 +202,7 @@ function toGeminiContents(messages: ChatMessage[]) {
 
       return {
         role: 'user',
-        parts: [{ text: typeof m.content === 'string' ? m.content : '' }],
+        parts: [{ text: toOpenAIText(m.content) }],
       };
     })
     .filter((entry): entry is { role: 'user' | 'model'; parts: GeminiPart[] } => entry !== null);
@@ -246,16 +264,23 @@ export class GoogleProvider extends BaseProvider {
         temperature: options?.temperature,
         maxOutputTokens: options?.max_tokens,
         topP: options?.top_p,
+        seed: options?.seed,
+        stopSequences: options?.stop
+          ? (Array.isArray(options.stop) ? options.stop : [options.stop])
+          : undefined,
       },
       tools: toGeminiTools(options?.tools),
       toolConfig: toGeminiToolConfig(options?.tool_choice),
     };
     if (systemInstruction) body.systemInstruction = systemInstruction;
 
-    const url = `${API_BASE}/models/${modelId}:generateContent?key=${apiKey}`;
+    const url = `${API_BASE}/models/${modelId}:generateContent`;
     const res = await this.fetchWithTimeout(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
       body: JSON.stringify(body),
     });
 
@@ -313,16 +338,23 @@ export class GoogleProvider extends BaseProvider {
         temperature: options?.temperature,
         maxOutputTokens: options?.max_tokens,
         topP: options?.top_p,
+        seed: options?.seed,
+        stopSequences: options?.stop
+          ? (Array.isArray(options.stop) ? options.stop : [options.stop])
+          : undefined,
       },
       tools: toGeminiTools(options?.tools),
       toolConfig: toGeminiToolConfig(options?.tool_choice),
     };
     if (systemInstruction) body.systemInstruction = systemInstruction;
 
-    const url = `${API_BASE}/models/${modelId}:streamGenerateContent?alt=sse&key=${apiKey}`;
+    const url = `${API_BASE}/models/${modelId}:streamGenerateContent?alt=sse`;
     const res = await this.fetchWithTimeout(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
       body: JSON.stringify(body),
     });
 
@@ -438,8 +470,8 @@ export class GoogleProvider extends BaseProvider {
   async validateKey(apiKey: string): Promise<boolean> {
     try {
       const res = await this.fetchWithTimeout(
-        `${API_BASE}/models?key=${apiKey}`,
-        { method: 'GET' },
+        `${API_BASE}/models`,
+        { method: 'GET', headers: { 'x-goog-api-key': apiKey } },
         10000,
       );
       return res.ok;
@@ -451,8 +483,8 @@ export class GoogleProvider extends BaseProvider {
   async getModels(apiKey: string): Promise<Array<{ id: string; name: string }>> {
     try {
       const res = await this.fetchWithTimeout(
-        `${API_BASE}/models?key=${apiKey}`,
-        { method: 'GET' },
+        `${API_BASE}/models`,
+        { method: 'GET', headers: { 'x-goog-api-key': apiKey } },
         10000,
       );
       if (!res.ok) return [];

@@ -11,7 +11,8 @@ export const keysRouter = Router();
 const PLATFORMS = [
   'google', 'groq', 'cerebras', 'sambanova', 'nvidia', 'mistral',
   'openrouter', 'github', 'huggingface', 'cohere', 'cloudflare',
-  'zhipu', 'moonshot', 'minimax', 'opencode', 'clod', 'deepseek'
+  'zhipu', 'moonshot', 'minimax', 'opencode', 'clod', 'deepseek',
+  'kilocode', 'zai'
 ] as const;
 
 const addKeySchema = z.object({

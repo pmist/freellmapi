@@ -6,10 +6,42 @@ import type {
 } from '@freellmapi/shared/types.js';
 import { BaseProvider, type CompletionOptions } from './base.js';
 
+/** Remove the OpenAI-only per-message `name` field that some providers reject. */
+function stripMessageName(message: ChatMessage): ChatMessage {
+  const copy: ChatMessage = { ...message };
+  delete copy.name;
+  return copy;
+}
+
+export interface OpenAICompatOptions {
+  platform: Platform;
+  name: string;
+  baseUrl: string;
+  extraHeaders?: Record<string, string>;
+  /** URL used by validateKey (defaults to `${baseUrl}/models`). */
+  validateUrl?: string;
+  /** URL used by getModels (defaults to validateUrl, then `${baseUrl}/models`). */
+  modelsUrl?: string;
+  /** Per-provider HTTP timeout override. Cloud APIs finish in ~15s; locally-hosted
+   * inference (llama.cpp / vLLM on CPU) can take 30-120s for long prompts. Default 15000. */
+  timeoutMs?: number;
+  /**
+   * Request field carrying the max output tokens. Providers that follow the newer
+   * OpenAI surface document `max_completion_tokens`; others use `max_tokens`.
+   */
+  maxTokensField?: 'max_tokens' | 'max_completion_tokens';
+  /** Seed field name. `random_seed` for Mistral; `null` omits seed entirely. */
+  seedField?: 'seed' | 'random_seed' | null;
+  /** Request fields this provider rejects and that must be dropped. */
+  dropParams?: string[];
+  /** Drop `messages[].name` (Groq rejects unknown message fields). */
+  dropMessageName?: boolean;
+}
+
 /**
- * Generic provider for platforms that use an OpenAI-compatible API.
+ * Generic provider for platforms that expose an OpenAI-compatible chat API.
  * Covers: Groq, Cerebras, SambaNova, NVIDIA NIM, Mistral, OpenRouter,
- * GitHub Models, Fireworks AI.
+ * GitHub Models, Zhipu, Moonshot, MiniMax, Kilo Code, CLōD, DeepSeek, Z.AI.
  */
 export class OpenAICompatProvider extends BaseProvider {
   readonly platform: Platform;
@@ -17,25 +49,67 @@ export class OpenAICompatProvider extends BaseProvider {
   private readonly baseUrl: string;
   private readonly extraHeaders: Record<string, string>;
   private readonly validateUrl?: string;
-  /** Per-provider HTTP timeout override. Cloud APIs finish in ~15s; locally-hosted
-   * inference (llama.cpp / vLLM on CPU) can take 30-120s for long prompts. Default 15000. */
+  private readonly modelsUrl?: string;
   private readonly timeoutMs: number;
+  private readonly maxTokensField: string;
+  private readonly seedField: 'seed' | 'random_seed' | null;
+  private readonly dropParams: string[];
+  private readonly dropMessageName: boolean;
 
-  constructor(opts: {
-    platform: Platform;
-    name: string;
-    baseUrl: string;
-    extraHeaders?: Record<string, string>;
-    validateUrl?: string;
-    timeoutMs?: number;
-  }) {
+  constructor(opts: OpenAICompatOptions) {
     super();
     this.platform = opts.platform;
     this.name = opts.name;
     this.baseUrl = opts.baseUrl;
     this.extraHeaders = opts.extraHeaders ?? {};
     this.validateUrl = opts.validateUrl;
+    this.modelsUrl = opts.modelsUrl;
     this.timeoutMs = opts.timeoutMs ?? 15000;
+    this.maxTokensField = opts.maxTokensField ?? 'max_tokens';
+    // undefined => default `seed`; null => provider does not support seed.
+    this.seedField = opts.seedField === undefined ? 'seed' : opts.seedField;
+    this.dropParams = opts.dropParams ?? [];
+    this.dropMessageName = opts.dropMessageName ?? false;
+  }
+
+  /**
+   * Builds the request body from OpenAI options, applying the per-provider
+   * field-name and unsupported-field adaptations declared in the options above.
+   */
+  private buildBody(
+    messages: ChatMessage[],
+    modelId: string,
+    options: CompletionOptions | undefined,
+    stream: boolean,
+  ): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      model: modelId,
+      messages: this.dropMessageName ? messages.map(stripMessageName) : messages,
+      temperature: options?.temperature,
+      top_p: options?.top_p,
+      stop: options?.stop,
+      frequency_penalty: options?.frequency_penalty,
+      presence_penalty: options?.presence_penalty,
+      user: options?.user,
+      tools: options?.tools,
+      tool_choice: options?.tool_choice,
+      parallel_tool_calls: options?.parallel_tool_calls,
+    };
+
+    body[this.maxTokensField] = options?.max_tokens;
+
+    if (this.seedField && options?.seed !== undefined) {
+      body[this.seedField] = options.seed;
+    }
+
+    if (stream) body.stream = true;
+
+    for (const key of Object.keys(body)) {
+      if (body[key] === undefined) delete body[key];
+    }
+    for (const key of this.dropParams) delete body[key];
+
+    return body;
   }
 
   async chatCompletion(
@@ -44,21 +118,7 @@ export class OpenAICompatProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): Promise<ChatCompletionResponse> {
-    const reqBody = {
-      model: modelId,
-      messages,
-      temperature: options?.temperature,
-      max_tokens: options?.max_tokens,
-      top_p: options?.top_p,
-      stop: options?.stop,
-      frequency_penalty: options?.frequency_penalty,
-      presence_penalty: options?.presence_penalty,
-      seed: options?.seed,
-      user: options?.user,
-      tools: options?.tools,
-      tool_choice: options?.tool_choice,
-      parallel_tool_calls: options?.parallel_tool_calls,
-    };
+    const reqBody = this.buildBody(messages, modelId, options, false);
 
     const res = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
@@ -91,6 +151,8 @@ export class OpenAICompatProvider extends BaseProvider {
     modelId: string,
     options?: CompletionOptions,
   ): AsyncGenerator<ChatCompletionChunk> {
+    const reqBody = this.buildBody(messages, modelId, options, true);
+
     const res = await this.fetchWithTimeout(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -98,22 +160,7 @@ export class OpenAICompatProvider extends BaseProvider {
         'Content-Type': 'application/json',
         ...this.extraHeaders,
       },
-      body: JSON.stringify({
-        model: modelId,
-        messages,
-        temperature: options?.temperature,
-        max_tokens: options?.max_tokens,
-        top_p: options?.top_p,
-        stop: options?.stop,
-        frequency_penalty: options?.frequency_penalty,
-        presence_penalty: options?.presence_penalty,
-        seed: options?.seed,
-        user: options?.user,
-        tools: options?.tools,
-        tool_choice: options?.tool_choice,
-        parallel_tool_calls: options?.parallel_tool_calls,
-        stream: true,
-      }),
+      body: JSON.stringify(reqBody),
     }, this.timeoutMs);
 
     if (!res.ok) {
@@ -161,10 +208,13 @@ export class OpenAICompatProvider extends BaseProvider {
     }
   }
 
+  private getModelsUrl(): string {
+    return this.modelsUrl ?? this.validateUrl ?? `${this.baseUrl}/models`;
+  }
+
   async validateKey(apiKey: string): Promise<boolean> {
     try {
-      const url = this.validateUrl ?? `${this.baseUrl}/models`;
-      const res = await this.fetchWithTimeout(url, {
+      const res = await this.fetchWithTimeout(this.getModelsUrl(), {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${apiKey}`,
@@ -180,8 +230,7 @@ export class OpenAICompatProvider extends BaseProvider {
 
   async getModels(apiKey: string): Promise<Array<{ id: string; name: string }>> {
     try {
-      const url = this.validateUrl ?? `${this.baseUrl}/models`;
-      const res = await this.fetchWithTimeout(url, {
+      const res = await this.fetchWithTimeout(this.getModelsUrl(), {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${apiKey}`,

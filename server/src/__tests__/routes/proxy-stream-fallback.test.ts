@@ -150,4 +150,17 @@ describe('Proxy streaming fallback', () => {
     expect(headers.get('x-fallback-attempts')).toBe('1');
     expect(raw).toContain('recovered');
   });
+
+  it('falls back on any non-2xx status, even one with no matching error text (422)', async () => {
+    const { status, headers, raw, providerCalls } = await runStreamingFallback(app, {
+      status: 422,
+      statusText: 'Unprocessable Entity',
+      body: { error: { message: 'unprocessable' } },
+    });
+
+    expect(status).toBe(200);
+    expect(providerCalls.length).toBeGreaterThanOrEqual(2);
+    expect(headers.get('x-fallback-attempts')).toBe('1');
+    expect(raw).toContain('recovered');
+  });
 });
