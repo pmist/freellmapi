@@ -29,6 +29,7 @@ const PLATFORMS: { value: Platform; label: string }[] = [
   { value: 'deepseek', label: 'DeepSeek' },
   { value: 'kilocode', label: 'Kilo Code' },
   { value: 'zai', label: 'Z.AI' },
+  { value: 'atria', label: 'Atria AI' },
 ]
 
 const statusDot: Record<string, string> = {

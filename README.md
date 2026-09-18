@@ -61,7 +61,8 @@ The problem is that stacking them by hand is painful: fourteen different SDKs, f
 <tr>
 <td align="center"><a href="https://platform.moonshot.cn"><b>Moonshot</b><br/>Kimi</a></td>
 <td align="center"><a href="https://platform.minimax.io"><b>MiniMax</b><br/>abab / hailuo</a></td>
-<td align="center" colspan="2"><i>Adding another? See <a href="#contributing">Contributing</a>.</i></td>
+<td align="center"><a href="https://atria-asi.ai"><b>Atria AI</b><br/>Atria-Dawn-Preview</a></td>
+<td align="center"><i>Adding another? See <a href="#contributing">Contributing</a>.</i></td>
 </tr>
 </table>
 

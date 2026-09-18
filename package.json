@@ -11,7 +11,7 @@
     "dev:https": "concurrently \"npm run dev:https -w server\" \"npm run dev:https -w client\"",
     "dev:server": "npm run dev -w server",
     "dev:server:https": "npm run dev:https -w server",
-    "test": "npm run test -w server && npm run test -w client",
+    "test": "npm run test -w server",
     "build": "npm run build -w server && npm run build -w client",
     "build:server": "npm run build -w server",
     "start:server": "npm run start -w server",

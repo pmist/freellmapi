@@ -107,6 +107,7 @@ const platformColors: Record<string, string> = {
   opencode:    '#10b981',
   clod:        '#3b82f6',
   deepseek:    '#1d4ed8',
+  atria:       '#0ea5e9',
 }
 
 // ── Sub-components ──

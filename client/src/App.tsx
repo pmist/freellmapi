@@ -27,22 +27,18 @@ function NavItem({ to, children }: { to: string; children: React.ReactNode }) {
 }
 
 function DarkModeToggle() {
-  const [dark, setDark] = useState(() =>
-    typeof window !== 'undefined' && document.documentElement.classList.contains('dark')
-  )
+  const [dark, setDark] = useState(() => {
+    const stored = localStorage.getItem('theme')
+    return stored === 'dark' || (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  })
 
   useEffect(() => {
-    const stored = localStorage.getItem('theme')
-    if (stored === 'dark' || (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-      document.documentElement.classList.add('dark')
-      setDark(true)
-    }
-  }, [])
+    document.documentElement.classList.toggle('dark', dark)
+  }, [dark])
 
   function toggle() {
     const next = !dark
     setDark(next)
-    document.documentElement.classList.toggle('dark', next)
     localStorage.setItem('theme', next ? 'dark' : 'light')
   }
 

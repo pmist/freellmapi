@@ -47,6 +47,7 @@ export function initDb(dbPath?: string): Database.Database {
   migrateModelsV10(db);
   migrateFallbackGroups(db);
   migrateModelsV11(db);
+  migrateModelsV12(db);
   ensureUnifiedKey(db);
 
   console.log(`Database initialized at ${resolvedPath}`);
@@ -1026,6 +1027,39 @@ function migrateModelsV11(db: Database.Database) {
         db.prepare('UPDATE models SET model_id = ?, display_name = ? WHERE id = ?').run(to, display, source.id);
       }
       // If only target exists (or neither), nothing to do
+    }
+  });
+  apply();
+}
+
+/**
+ * V12: Add the Atria AI model (Atria-Dawn-Preview).
+ * OpenAI-compatible Chat Completions; 256K context, text-only, preview/free tier.
+ */
+function migrateModelsV12(db: Database.Database) {
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const additions: Array<[string, string, string, number, number, string, number | null, number | null, number | null, number | null, string, number | null]> = [
+    // Atria AI — Atria-Dawn-Preview. Account-wide 60 RPM shared across keys/APIs;
+    // other quotas not documented. 256K context window.
+    ['atria', 'Atria-Dawn-Preview', 'Atria Dawn Preview', 6, 8, 'Frontier', 60, null, null, null, 'Preview', 256000],
+  ];
+
+  const apply = db.transaction(() => {
+    for (const m of additions) insert.run(...m);
+
+    const missing = db.prepare(`
+      SELECT m.id FROM models m
+      LEFT JOIN fallback_config f ON m.id = f.model_db_id
+      WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
+    `).all() as { id: number }[];
+    if (missing.length > 0) {
+      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+      const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
+      for (let i = 0; i < missing.length; i++) addFb.run(missing[i].id, maxPriority + i + 1);
     }
   });
   apply();

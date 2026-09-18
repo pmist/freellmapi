@@ -27,6 +27,11 @@ interface ChatMessage {
   }
 }
 
+interface ChatCompletionRequestBody {
+  messages: { role: ChatMessage['role']; content: string }[]
+  model?: string
+}
+
 export default function PlaygroundPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
@@ -66,7 +71,7 @@ export default function PlaygroundPage() {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (keyData?.apiKey) headers['Authorization'] = `Bearer ${keyData.apiKey}`
 
-      const body: any = {
+      const body: ChatCompletionRequestBody = {
         messages: newMessages.map(m => ({ role: m.role, content: m.content })),
       }
       if (selectedModel !== 'auto') body.model = selectedModel
@@ -109,10 +114,10 @@ export default function PlaygroundPage() {
           fallbackAttempts: fallbackAttempts ? parseInt(fallbackAttempts) : undefined,
         },
       }])
-    } catch (err: any) {
+    } catch (err) {
       setMessages([...newMessages, {
         role: 'assistant',
-        content: `Error: ${err.message}`,
+        content: `Error: ${err instanceof Error ? err.message : String(err)}`,
       }])
     } finally {
       setLoading(false)

@@ -19,7 +19,8 @@ export type Platform =
   | 'clod'
   | 'deepseek'
   | 'kilocode'
-  | 'zai';
+  | 'zai'
+  | 'atria';
 
 export interface Model {
   id: number;

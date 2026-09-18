@@ -145,6 +145,15 @@ register(new OpenAICompatProvider({
   seedField: null,
 }));
 
+// Atria AI - OpenAI-compatible Chat Completions (Atria-Dawn-Preview). Text-only;
+// no documented `seed` parameter, so omit it.
+register(new OpenAICompatProvider({
+  platform: 'atria',
+  name: 'Atria AI',
+  baseUrl: 'https://api.atria-asi.ai/v1',
+  seedField: null,
+}));
+
 export function getProvider(platform: Platform): BaseProvider | undefined {
   return providers.get(platform);
 }

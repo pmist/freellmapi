@@ -8,8 +8,35 @@ import { apiFetch } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { PageHeader } from '@/components/page-header'
+import type { AnalyticsSummary, PlatformStats, TimelinePoint } from '../../../shared/types'
 
 type TimeRange = '24h' | '7d' | '30d'
+
+interface ModelStat {
+  platform: string
+  modelId: string
+  displayName: string
+  requests: number
+  successRate: number
+  avgLatencyMs: number
+  totalInputTokens: number
+  totalOutputTokens: number
+}
+
+interface ErrorLogEntry {
+  id: number
+  platform: string
+  modelId: string
+  error: string | null
+  latencyMs: number
+  createdAt: string
+}
+
+interface ErrorDistribution {
+  byCategory: { category: string; count: number }[]
+  byPlatform: { platform: string; count: number }[]
+  detailed: { platform: string; model_id: string; error_category: string; count: number }[]
+}
 
 function formatTokens(n?: number): string {
   if (!n) return '0'
@@ -47,32 +74,32 @@ export default function AnalyticsPage() {
 
   const { data: summary } = useQuery({
     queryKey: ['analytics', 'summary', range],
-    queryFn: () => apiFetch<any>(`/api/analytics/summary?range=${range}`),
+    queryFn: () => apiFetch<AnalyticsSummary>(`/api/analytics/summary?range=${range}`),
   })
 
   const { data: byPlatform = [] } = useQuery({
     queryKey: ['analytics', 'by-platform', range],
-    queryFn: () => apiFetch<any[]>(`/api/analytics/by-platform?range=${range}`),
+    queryFn: () => apiFetch<PlatformStats[]>(`/api/analytics/by-platform?range=${range}`),
   })
 
   const { data: timeline = [] } = useQuery({
     queryKey: ['analytics', 'timeline', range],
-    queryFn: () => apiFetch<any[]>(`/api/analytics/timeline?range=${range}`),
+    queryFn: () => apiFetch<TimelinePoint[]>(`/api/analytics/timeline?range=${range}`),
   })
 
   const { data: byModel = [] } = useQuery({
     queryKey: ['analytics', 'by-model', range],
-    queryFn: () => apiFetch<any[]>(`/api/analytics/by-model?range=${range}`),
+    queryFn: () => apiFetch<ModelStat[]>(`/api/analytics/by-model?range=${range}`),
   })
 
   const { data: errors = [] } = useQuery({
     queryKey: ['analytics', 'errors', range],
-    queryFn: () => apiFetch<any[]>(`/api/analytics/errors?range=${range}`),
+    queryFn: () => apiFetch<ErrorLogEntry[]>(`/api/analytics/errors?range=${range}`),
   })
 
   const { data: errorDist } = useQuery({
     queryKey: ['analytics', 'error-distribution', range],
-    queryFn: () => apiFetch<{ byCategory: any[]; byPlatform: any[]; detailed: any[] }>(`/api/analytics/error-distribution?range=${range}`),
+    queryFn: () => apiFetch<ErrorDistribution>(`/api/analytics/error-distribution?range=${range}`),
   })
 
   return (
@@ -179,7 +206,7 @@ export default function AnalyticsPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {byModel.map((m: any, i: number) => (
+                      {byModel.map((m, i) => (
                         <TableRow key={i}>
                           <TableCell className="pl-4 text-sm font-medium">{m.displayName}</TableCell>
                           <TableCell className="text-xs text-muted-foreground">{m.platform}</TableCell>
@@ -227,7 +254,7 @@ export default function AnalyticsPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {errors.slice(0, 20).map((e: any) => (
+                    {errors.slice(0, 20).map((e) => (
                       <TableRow key={e.id}>
                         <TableCell className="pl-4 text-xs">{e.platform}</TableCell>
                         <TableCell className="text-xs max-w-[200px] truncate">{e.error}</TableCell>
