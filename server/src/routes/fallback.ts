@@ -294,6 +294,27 @@ fallbackRouter.delete('/group/:group/models/:modelDbId', (req: Request, res: Res
   res.json({ success: true });
 });
 
+// ── Remove all models from a group (or every group) ──
+const clearSchema = z.object({
+  group: z.enum(['auto', 'planning', 'execution', 'review']).optional(),
+}).strict();
+
+fallbackRouter.post('/clear', (req: Request, res: Response) => {
+  const parsed = clearSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: { message: parsed.error.errors.map(e => e.message).join(', ') } });
+    return;
+  }
+
+  const db = getDb();
+  const { group } = parsed.data;
+  const result = group
+    ? db.prepare('DELETE FROM fallback_config WHERE fallback_group = ?').run(group)
+    : db.prepare('DELETE FROM fallback_config').run();
+
+  res.json({ success: true, removed: result.changes, group: group ?? null });
+});
+
 // ── Sort within a group ──
 fallbackRouter.post('/group/:group/sort/:preset', (req: Request, res: Response) => {
   const group = req.params.group as string;

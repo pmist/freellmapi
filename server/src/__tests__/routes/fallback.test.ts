@@ -102,4 +102,39 @@ describe('Fallback API', () => {
     const { status } = await request(app, 'POST', '/api/fallback/sort/invalid');
     expect(status).toBe(400);
   });
+
+  it('POST /api/fallback/clear clears a single group', async () => {
+    const { body: before } = await request(app, 'GET', '/api/fallback/groups');
+    expect(before.auto.length).toBeGreaterThan(0);
+
+    const { status, body } = await request(app, 'POST', '/api/fallback/clear', { group: 'auto' });
+    expect(status).toBe(200);
+    expect(body.removed).toBe(before.auto.length);
+
+    const { body: after } = await request(app, 'GET', '/api/fallback/groups');
+    expect(after.auto).toEqual([]);
+    expect(after.planning.length).toBe(before.planning.length);
+  });
+
+  it('POST /api/fallback/clear with no group clears every group', async () => {
+    // Seed a non-auto group so this test is independent of prior clear operations
+    // (all seeded fallback rows default to the "auto" group).
+    const { body: models } = await request(app, 'GET', '/api/fallback/models');
+    await request(app, 'POST', '/api/fallback/group/planning/models', { modelDbIds: [models[0].id] });
+
+    const { status, body } = await request(app, 'POST', '/api/fallback/clear', {});
+    expect(status).toBe(200);
+    expect(body.removed).toBeGreaterThan(0);
+
+    const { body: after } = await request(app, 'GET', '/api/fallback/groups');
+    expect(after.auto).toEqual([]);
+    expect(after.planning).toEqual([]);
+    expect(after.execution).toEqual([]);
+    expect(after.review).toEqual([]);
+  });
+
+  it('POST /api/fallback/clear rejects an invalid group', async () => {
+    const { status } = await request(app, 'POST', '/api/fallback/clear', { group: 'nope' });
+    expect(status).toBe(400);
+  });
 });

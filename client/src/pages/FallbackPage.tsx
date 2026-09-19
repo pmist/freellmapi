@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   DndContext,
@@ -21,6 +21,7 @@ import { apiFetch } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/page-header'
 import { Input } from '@/components/ui/input'
+import { Trash2 } from 'lucide-react'
 
 // ── Types ──
 
@@ -59,6 +60,12 @@ interface AvailableModel {
 type Groups = Record<string, ModelEntry[]>
 
 type GroupName = 'auto' | 'planning' | 'execution' | 'review'
+
+interface ClearResult {
+  success: boolean
+  removed: number
+  group: string | null
+}
 
 interface TokenUsageData {
   totalBudget: number
@@ -334,6 +341,8 @@ interface GroupSectionProps {
   onSave: () => void
   onDiscard: () => void
   savePending: boolean
+  onRemoveAll: () => void
+  clearing: boolean
 }
 
 function GroupSection({
@@ -349,6 +358,8 @@ function GroupSection({
   onSave,
   onDiscard,
   savePending,
+  onRemoveAll,
+  clearing,
 }: GroupSectionProps) {
   const modelIds = entries.map(e => e.modelDbId)
 
@@ -374,6 +385,18 @@ function GroupSection({
             Sort budget
           </Button>
           <Button size="sm" onClick={onAddModel}>+ Add model</Button>
+          {entries.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-muted-foreground hover:text-destructive"
+              onClick={onRemoveAll}
+              disabled={isSorting || clearing}
+            >
+              <Trash2 className="size-3 mr-1" />
+              Remove all
+            </Button>
+          )}
         </div>
       </div>
 
@@ -420,6 +443,14 @@ function GroupSection({
 export default function FallbackPage() {
   const queryClient = useQueryClient()
 
+  const [status, setStatus] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
+
+  useEffect(() => {
+    if (!status) return
+    const t = setTimeout(() => setStatus(null), 4000)
+    return () => clearTimeout(t)
+  }, [status])
+
   // ── Server data ──
   const { data: groupsData, isLoading } = useQuery<Groups>({
     queryKey: ['fallback', 'groups'],
@@ -449,7 +480,10 @@ export default function FallbackPage() {
   )
 
   // ── Effective data ──
-  const groups = localGroups ?? groupsData ?? { auto: [], planning: [], execution: [], review: [] }
+  const groups = useMemo(
+    () => localGroups ?? groupsData ?? { auto: [], planning: [], execution: [], review: [] },
+    [localGroups, groupsData],
+  )
 
   // ── Mutations ──
 
@@ -459,19 +493,74 @@ export default function FallbackPage() {
         method: 'POST',
         body: JSON.stringify({ modelDbIds }),
       }),
+    onError: (err) => setStatus({ kind: 'error', text: `Failed to add model: ${(err as Error).message}` }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['fallback', 'groups'] })
       queryClient.invalidateQueries({ queryKey: ['fallback', 'token-usage'] })
       setLocalGroups(null)
+      setStatus({ kind: 'success', text: 'Model added to group.' })
     },
   })
 
   const removeMutation = useMutation({
     mutationFn: ({ group, modelDbId }: { group: GroupName; modelDbId: number }) =>
       apiFetch(`/api/fallback/group/${group}/models/${modelDbId}`, { method: 'DELETE' }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['fallback', 'groups'] })
+    onMutate: async ({ group, modelDbId }) => {
+      await queryClient.cancelQueries({ queryKey: ['fallback', 'groups'] })
+      const previous = queryClient.getQueryData<Groups>(['fallback', 'groups'])
       setLocalGroups(null)
+      queryClient.setQueryData<Groups>(['fallback', 'groups'], (old) => {
+        if (!old) return old
+        return { ...old, [group]: (old[group] ?? []).filter(e => e.modelDbId !== modelDbId) }
+      })
+      return { previous }
+    },
+    onError: (err, _vars, ctx) => {
+      if (ctx?.previous) queryClient.setQueryData(['fallback', 'groups'], ctx.previous)
+      setStatus({ kind: 'error', text: `Failed to remove model: ${(err as Error).message}` })
+    },
+    onSuccess: () => {
+      setStatus({ kind: 'success', text: 'Model removed from group.' })
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['fallback', 'groups'] })
+      queryClient.invalidateQueries({ queryKey: ['fallback', 'token-usage'] })
+    },
+  })
+
+  const clearMutation = useMutation({
+    mutationFn: (group: GroupName | null) =>
+      apiFetch<ClearResult>('/api/fallback/clear', {
+        method: 'POST',
+        body: JSON.stringify(group ? { group } : {}),
+      }),
+    onMutate: async (group) => {
+      await queryClient.cancelQueries({ queryKey: ['fallback', 'groups'] })
+      const previous = queryClient.getQueryData<Groups>(['fallback', 'groups'])
+      setLocalGroups(null)
+      queryClient.setQueryData<Groups>(['fallback', 'groups'], (old) => {
+        if (!old) return old
+        if (group) return { ...old, [group]: [] }
+        return { auto: [], planning: [], execution: [], review: [] }
+      })
+      return { previous }
+    },
+    onError: (err, _group, ctx) => {
+      if (ctx?.previous) queryClient.setQueryData(['fallback', 'groups'], ctx.previous)
+      setStatus({ kind: 'error', text: `Failed to remove models: ${(err as Error).message}` })
+    },
+    onSuccess: (result, group) => {
+      const noun = result.removed === 1 ? 'model' : 'models'
+      setStatus({
+        kind: 'success',
+        text: group
+          ? `Removed ${result.removed} ${noun} from the ${GROUP_LABELS[group]} group.`
+          : `Removed all ${result.removed} ${noun} from every group.`,
+      })
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['fallback', 'groups'] })
+      queryClient.invalidateQueries({ queryKey: ['fallback', 'token-usage'] })
     },
   })
 
@@ -481,18 +570,22 @@ export default function FallbackPage() {
         method: 'PUT',
         body: JSON.stringify(entries),
       }),
+    onError: (err) => setStatus({ kind: 'error', text: `Failed to save order: ${(err as Error).message}` }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['fallback', 'groups'] })
       setLocalGroups(null)
+      setStatus({ kind: 'success', text: 'Order saved.' })
     },
   })
 
   const sortMutation = useMutation({
     mutationFn: ({ group, preset }: { group: GroupName; preset: string }) =>
       apiFetch(`/api/fallback/group/${group}/sort/${preset}`, { method: 'POST' }),
+    onError: (err) => setStatus({ kind: 'error', text: `Failed to sort: ${(err as Error).message}` }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['fallback', 'groups'] })
       setLocalGroups(null)
+      setStatus({ kind: 'success', text: 'Group sorted.' })
     },
   })
 
@@ -521,6 +614,21 @@ export default function FallbackPage() {
   const handleRemove = useCallback((group: GroupName) => (modelDbId: number) => {
     removeMutation.mutate({ group, modelDbId })
   }, [removeMutation])
+
+  const handleRemoveAll = useCallback((group: GroupName) => () => {
+    const count = groups[group]?.length ?? 0
+    if (count === 0) return
+    const label = GROUP_LABELS[group]
+    if (!window.confirm(`Remove all ${count} model${count === 1 ? '' : 's'} from the ${label} group? You can add them back later.`)) return
+    clearMutation.mutate(group)
+  }, [groups, clearMutation])
+
+  const handleRemoveAllModels = useCallback(() => {
+    const total = GROUP_NAMES.reduce((n, g) => n + (groups[g]?.length ?? 0), 0)
+    if (total === 0) return
+    if (!window.confirm(`Remove all ${total} models from every group? You can add them back later.`)) return
+    clearMutation.mutate(null)
+  }, [groups, clearMutation])
 
   const handleAddModel = useCallback((group: GroupName) => {
     setDialogGroup(group)
@@ -567,6 +675,8 @@ export default function FallbackPage() {
     return local.some((e, i) => e.modelDbId !== server[i].modelDbId)
   }, [localGroups, groupsData])
 
+  const totalModels = GROUP_NAMES.reduce((n, g) => n + (groups[g]?.length ?? 0), 0)
+
   // ── Render ──
 
   return (
@@ -574,7 +684,33 @@ export default function FallbackPage() {
       <PageHeader
         title="Fallback chain"
         description="Organize models into groups. Requests use the matching group's prioritized model list."
+        actions={
+          totalModels > 0 ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-muted-foreground hover:text-destructive"
+              onClick={handleRemoveAllModels}
+              disabled={clearMutation.isPending}
+            >
+              <Trash2 className="size-3 mr-2" />
+              {clearMutation.isPending ? 'Removing…' : 'Remove all models'}
+            </Button>
+          ) : undefined
+        }
       />
+
+      {status && (
+        <div
+          className={`mb-4 rounded-md border px-4 py-2 text-sm ${
+            status.kind === 'success'
+              ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+              : 'border-destructive/30 bg-destructive/10 text-destructive'
+          }`}
+        >
+          {status.text}
+        </div>
+      )}
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
@@ -588,6 +724,8 @@ export default function FallbackPage() {
               sensors={sensors}
               onDragEnd={handleDragEnd(group)}
               onRemove={handleRemove(group)}
+              onRemoveAll={handleRemoveAll(group)}
+              clearing={clearMutation.isPending}
               onAddModel={() => handleAddModel(group)}
               onSort={handleSort(group)}
               isSorting={sortMutation.isPending}
