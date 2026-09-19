@@ -1,7 +1,7 @@
 import { getDb } from '../db/index.js';
 import { getProvider } from '../providers/index.js';
 import { decrypt } from '../lib/crypto.js';
-import { canMakeRequest, canUseTokens, isOnCooldown } from './ratelimit.js';
+import { canMakeRequest, canUseTokens, isOnCooldown, clearAllCooldowns, clearRateLimitWindows } from './ratelimit.js';
 import type { BaseProvider } from '../providers/base.js';
 
 interface ModelRow {
@@ -152,6 +152,17 @@ export function getAllPenalties(): Array<{ modelDbId: number; count: number; pen
     }
   }
   return result.sort((a, b) => b.penalty - a.penalty);
+}
+
+/**
+ * Clear all in-memory routing state: 429 penalties, per-key cooldowns, and the
+ * sliding-window rate-limit counters. Use after fixing configuration so a
+ * previously-exhausted process recovers without a full restart.
+ */
+export function resetRuntimeState(): void {
+  rateLimitPenalties.clear();
+  clearAllCooldowns();
+  clearRateLimitWindows();
 }
 
 /**

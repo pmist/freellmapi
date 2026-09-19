@@ -77,8 +77,7 @@ The problem is that stacking them by hand is painful: fourteen different SDKs, f
 - **Encrypted key storage** — API keys are encrypted with AES-256-GCM before hitting SQLite; decryption happens in-memory just before a request.
 - **Unified API key** — Clients authenticate to your proxy with a single `freellmapi-…` bearer token. You never expose upstream provider keys to your apps.
 - **Health checks** — Periodic probes mark keys as `healthy`, `rate_limited`, `invalid`, or `error` so the router skips dead ones automatically.
-- **Admin dashboard** — React + Vite UI to manage keys, reorder the fallback chain, inspect analytics, and run prompts in a playground. Dark mode included.
-- **Analytics** — Per-request logging with latency, token counts, success rate, and per-provider breakdowns.
+- **Admin dashboard** — React + Vite UI to manage keys and reorder the fallback chain. Dark mode included.
 - **Deploys to a Raspberry Pi** — Runs happily on a Pi 4 under PM2 behind nginx. ~40 MB RSS at idle.
 
 ## Not yet supported
@@ -220,18 +219,6 @@ Manage provider credentials and grab the unified API key your apps connect with.
 
 ![Keys page](repo-assets/keys.png)
 
-### Playground
-
-Send a chat completion through the router and see which provider served it, with the model ID and latency printed right on the message.
-
-![Playground page](repo-assets/playground.png)
-
-### Analytics
-
-Request volume, success rate, tokens in and out, average latency, and per-provider breakdowns over 24h / 7d / 30d windows.
-
-![Analytics page](repo-assets/analytics.png)
-
 ## How it works
 
 ```
@@ -280,7 +267,7 @@ Contributors very welcome! Good first PRs:
 - **Add a provider** — copy `server/src/providers/openai-compat.ts` as a template, wire it into `server/src/providers/index.ts`, seed its models in `server/src/db/index.ts`, add a test in `server/src/__tests__/providers/`.
 - **Add an endpoint** — embeddings, images, moderations. The provider base class can grow new methods; adapters declare which they support.
 - **Improve the router** — cost-aware routing (cheapest-healthy-fastest tradeoffs), better latency-weighted priority, regional pinning.
-- **Dashboard polish** — charts on the Analytics page, key rotation UX, batch import of keys from `.env`.
+- **Dashboard polish** — key rotation UX, batch import of keys from `.env`.
 - **Docs** — more examples, client library snippets for Go/Rust/etc., a deployment recipe for Docker or Fly.
 
 **Development loop:**
@@ -288,7 +275,7 @@ Contributors very welcome! Good first PRs:
 ```bash
 npm install
 npm run dev      # server on :3001, dashboard on :5173, both with HMR
-npm test         # vitest — 75 tests across providers, routes, router, ratelimit
+npm test         # vitest — providers, routes, router, ratelimit
 ```
 
 PRs should include a test, keep the existing test suite green, and match the `.editorconfig` / tsconfig defaults already in the repo. Issues and discussions are open.

@@ -123,6 +123,16 @@ export function isOnCooldown(platform: string, modelId: string, keyId: number): 
   return true;
 }
 
+/** Clear every per-(model,key) cooldown. Used by the runtime reset action. */
+export function clearAllCooldowns(): void {
+  cooldowns.clear();
+}
+
+/** Clear every sliding-window rate-limit counter. Used by the runtime reset action. */
+export function clearRateLimitWindows(): void {
+  windows.clear();
+}
+
 export function getRateLimitStatus(
   platform: string,
   modelId: string,

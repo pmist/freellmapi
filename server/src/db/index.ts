@@ -33,6 +33,8 @@ export function initDb(dbPath?: string): Database.Database {
   db.pragma('foreign_keys = ON');
 
   createTables(db);
+  dropLegacyTables(db);
+  ensureModelColumns(db);
   initEncryptionKey(db);
   seedModels(db);
   migrateModels(db);
@@ -71,6 +73,7 @@ function createTables(db: Database.Database) {
       monthly_token_budget TEXT NOT NULL DEFAULT '',
       context_window INTEGER,
       enabled INTEGER NOT NULL DEFAULT 1,
+      source TEXT NOT NULL DEFAULT 'seed',
       UNIQUE(platform, model_id)
     );
 
@@ -87,18 +90,6 @@ function createTables(db: Database.Database) {
       last_checked_at TEXT
     );
 
-    CREATE TABLE IF NOT EXISTS requests (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      platform TEXT NOT NULL,
-      model_id TEXT NOT NULL,
-      status TEXT NOT NULL,
-      input_tokens INTEGER NOT NULL DEFAULT 0,
-      output_tokens INTEGER NOT NULL DEFAULT 0,
-      latency_ms INTEGER NOT NULL DEFAULT 0,
-      error TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
     CREATE TABLE IF NOT EXISTS fallback_config (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       model_db_id INTEGER NOT NULL REFERENCES models(id),
@@ -113,10 +104,21 @@ function createTables(db: Database.Database) {
       value TEXT NOT NULL
     );
 
-    CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at);
-    CREATE INDEX IF NOT EXISTS idx_requests_platform ON requests(platform);
     CREATE INDEX IF NOT EXISTS idx_api_keys_platform ON api_keys(platform);
   `);
+}
+
+/** Drops tables for features that were removed (idempotent). */
+function dropLegacyTables(db: Database.Database) {
+  db.exec('DROP TABLE IF EXISTS requests');
+}
+
+/** Adds model columns introduced after the initial schema (idempotent). */
+function ensureModelColumns(db: Database.Database) {
+  const cols = db.prepare('PRAGMA table_info(models)').all() as { name: string }[];
+  if (!cols.some(c => c.name === 'source')) {
+    db.exec("ALTER TABLE models ADD COLUMN source TEXT NOT NULL DEFAULT 'seed'");
+  }
 }
 
 function seedModels(db: Database.Database) {
@@ -253,7 +255,7 @@ function migrateModels(db: Database.Database) {
     const missing = db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
-      WHERE f.id IS NULL
+      WHERE f.id IS NULL AND m.source = 'seed'
       ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
@@ -333,7 +335,7 @@ function migrateModelsV2(db: Database.Database) {
     const missing = db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
-      WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
+      WHERE f.id IS NULL AND m.source = 'seed' ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
       const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
@@ -491,7 +493,7 @@ function migrateModelsV4(db: Database.Database) {
     const missing = db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
-      WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
+      WHERE f.id IS NULL AND m.source = 'seed' ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
       const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
@@ -571,7 +573,7 @@ function migrateModelsV5(db: Database.Database) {
     const missing = db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
-      WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
+      WHERE f.id IS NULL AND m.source = 'seed' ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
       const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
@@ -658,7 +660,7 @@ function migrateModelsV6(db: Database.Database) {
     const missing = db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
-      WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
+      WHERE f.id IS NULL AND m.source = 'seed' ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
       const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
@@ -737,7 +739,7 @@ function migrateModelsV7(db: Database.Database) {
     const missing = db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
-      WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
+      WHERE f.id IS NULL AND m.source = 'seed' ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
       const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
@@ -769,7 +771,7 @@ function migrateModelsV8(db: Database.Database) {
     const missing = db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
-      WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
+      WHERE f.id IS NULL AND m.source = 'seed' ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
       const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
@@ -800,7 +802,7 @@ function migrateModelsV9(db: Database.Database) {
     const missing = db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
-      WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
+      WHERE f.id IS NULL AND m.source = 'seed' ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
       const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
@@ -834,49 +836,58 @@ export function regenerateUnifiedKey(): string {
 }
 
 /**
- * Dynamically import a list of models for a platform.
- * Inserts missing models with a default intelligence_rank of 50.
+ * Import a list of models for a platform, REPLACING that provider's catalog.
+ * Models of this platform that are not in `modelsToImport` are removed along
+ * with their fallback-group memberships, so the saved catalog always matches
+ * what was imported. Imported models are added to the default 'auto' group when
+ * they are not already in a group.
  */
-export function importModels(db: Database.Database, platform: string, modelsToImport: Array<{ id: string; name: string }>): { inserted: number; skipped: number } {
+export function importModels(db: Database.Database, platform: string, modelsToImport: Array<{ id: string; name: string }>): { inserted: number; skipped: number; removed: number } {
   const insert = db.prepare(`
     INSERT OR IGNORE INTO models (
       platform, model_id, display_name, intelligence_rank, speed_rank, size_label,
-      rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window, enabled
-    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, '', NULL, 1)
+      rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window, enabled, source
+    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, '', NULL, 1, 'import')
   `);
-
+  const markImported = db.prepare("UPDATE models SET source = 'import' WHERE platform = ? AND model_id = ?");
+  const findModel = db.prepare('SELECT id FROM models WHERE platform = ? AND model_id = ?');
+  const hasFallback = db.prepare('SELECT 1 FROM fallback_config WHERE model_db_id = ? LIMIT 1');
   const addFb = db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)');
+  const deleteFallback = db.prepare('DELETE FROM fallback_config WHERE model_db_id = ?');
+  const deleteModel = db.prepare('DELETE FROM models WHERE id = ?');
 
+  const importIds = new Set(modelsToImport.map(m => m.id));
   let inserted = 0;
   let skipped = 0;
+  let removed = 0;
 
   const apply = db.transaction(() => {
-    for (const m of modelsToImport) {
-      const info = insert.run(platform, m.id, m.name || m.id, 50, 5, 'Unknown');
-      if (info.changes > 0) {
-        inserted++;
-      } else {
-        skipped++;
-      }
+    // Replace: drop this provider's models that were not imported.
+    const existing = db.prepare('SELECT id, model_id FROM models WHERE platform = ?').all(platform) as { id: number; model_id: string }[];
+    for (const old of existing) {
+      if (importIds.has(old.model_id)) continue;
+      deleteFallback.run(old.id);
+      deleteModel.run(old.id);
+      removed++;
     }
 
-    const missing = db.prepare(`
-      SELECT m.id FROM models m
-      LEFT JOIN fallback_config f ON m.id = f.model_db_id
-      WHERE f.id IS NULL
-      ORDER BY m.intelligence_rank ASC
-    `).all() as { id: number }[];
-
-    if (missing.length > 0) {
-      const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
-      for (let i = 0; i < missing.length; i++) {
-        addFb.run(missing[i].id, maxPriority + i + 1);
-      }
+    // Keep/insert the imported models and ensure they are in a fallback group.
+    let priority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
+    for (const m of modelsToImport) {
+      const info = insert.run(platform, m.id, m.name || m.id, 50, 5, 'Unknown');
+      if (info.changes > 0) inserted++;
+      else skipped++;
+      markImported.run(platform, m.id);
+      const row = findModel.get(platform, m.id) as { id: number } | undefined;
+      if (!row) continue;
+      if (hasFallback.get(row.id)) continue;
+      priority += 1;
+      addFb.run(row.id, priority);
     }
   });
 
   apply();
-  return { inserted, skipped };
+  return { inserted, skipped, removed };
 }
 
 /**
@@ -914,7 +925,7 @@ function migrateModelsV10(db: Database.Database) {
     const missing = db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
-      WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
+      WHERE f.id IS NULL AND m.source = 'seed' ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
       const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;
@@ -1054,7 +1065,7 @@ function migrateModelsV12(db: Database.Database) {
     const missing = db.prepare(`
       SELECT m.id FROM models m
       LEFT JOIN fallback_config f ON m.id = f.model_db_id
-      WHERE f.id IS NULL ORDER BY m.intelligence_rank ASC
+      WHERE f.id IS NULL AND m.source = 'seed' ORDER BY m.intelligence_rank ASC
     `).all() as { id: number }[];
     if (missing.length > 0) {
       const maxPriority = (db.prepare('SELECT COALESCE(MAX(priority), 0) AS mx FROM fallback_config').get() as { mx: number }).mx;

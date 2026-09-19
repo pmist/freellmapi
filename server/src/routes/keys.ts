@@ -212,7 +212,7 @@ keysRouter.get('/sync/all', async (_req: Request, res: Response) => {
       console.error(`Failed to sync models for key ${k.id} (${k.platform}):`, err);
     }
   }
-  
+
   res.json(results);
 });
 
@@ -306,14 +306,32 @@ keysRouter.post('/sync/import-bulk', async (req: Request, res: Response) => {
   const db = getDb();
   try {
     const { importModels } = await import('../db/index.js');
+
+    // Merge entries by platform (a platform can appear once per key) so exactly
+    // one replace runs per provider.
+    const byPlatform = new Map<string, { id: string; name: string }[]>();
+    for (const item of parsed.data.items) {
+      let list = byPlatform.get(item.platform);
+      if (!list) {
+        list = [];
+        byPlatform.set(item.platform, list);
+      }
+      const seen = new Set(list.map(m => m.id));
+      for (const m of item.models) {
+        if (!seen.has(m.id)) list.push(m);
+      }
+    }
+
     let totalInserted = 0;
     let totalSkipped = 0;
-    for (const item of parsed.data.items) {
-      const result = importModels(db, item.platform, item.models);
+    let totalRemoved = 0;
+    for (const [platform, models] of byPlatform) {
+      const result = importModels(db, platform, models);
       totalInserted += result.inserted;
       totalSkipped += result.skipped;
+      totalRemoved += result.removed;
     }
-    res.json({ success: true, inserted: totalInserted, skipped: totalSkipped });
+    res.json({ success: true, inserted: totalInserted, skipped: totalSkipped, removed: totalRemoved });
   } catch (err: any) {
     res.status(500).json({ error: { message: err.message || 'Failed to bulk import models' } });
   }

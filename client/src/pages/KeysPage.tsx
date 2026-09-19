@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { RefreshCw, Trash2, X } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
@@ -134,21 +134,29 @@ function SyncModelsModal({
   keyId: number, platform: string, onClose: () => void, onImported: () => void
 }) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [importResult, setImportResult] = useState<{ inserted: number; skipped: number } | null>(null)
+  const [search, setSearch] = useState('')
+  const [importResult, setImportResult] = useState<{ inserted: number; skipped: number; removed: number } | null>(null)
 
   const { data: models, isLoading, error } = useQuery<{id: string, name: string}[]>({
     queryKey: ['sync-models', keyId],
     queryFn: () => apiFetch(`/api/keys/${keyId}/models`),
   })
 
+  const filtered = useMemo(() => {
+    if (!models) return []
+    const q = search.trim().toLowerCase()
+    if (!q) return models
+    return models.filter(m => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q))
+  }, [models, search])
+
   const importMutation = useMutation({
     mutationFn: (modelsToImport: {id: string, name: string}[]) =>
-      apiFetch<{ success: boolean; inserted: number; skipped: number }>(`/api/keys/${keyId}/models/import`, {
+      apiFetch<{ success: boolean; inserted: number; skipped: number; removed: number }>(`/api/keys/${keyId}/models/import`, {
         method: 'POST',
         body: JSON.stringify({ models: modelsToImport })
       }),
     onSuccess: (result) => {
-      setImportResult({ inserted: result.inserted, skipped: result.skipped })
+      setImportResult({ inserted: result.inserted, skipped: result.skipped, removed: result.removed })
       onImported()
     },
     onError: (err: Error) => {
@@ -170,7 +178,7 @@ function SyncModelsModal({
     importMutation.mutate(toImport)
   }
 
-  const allSelected = models && selectedIds.size === models.length
+  const allVisibleSelected = filtered.length > 0 && filtered.every(m => selectedIds.has(m.id))
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
@@ -185,15 +193,22 @@ function SyncModelsModal({
         <div className="flex-1 overflow-auto p-4 space-y-3">
           {importResult ? (
             <div className="space-y-3">
-              <div className={`rounded-lg border p-4 ${importResult.inserted > 0 ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-muted border-border'}`}>
+              <div className={`rounded-lg border p-4 ${importResult.inserted > 0 || importResult.removed > 0 ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-muted border-border'}`}>
                 <p className="text-sm font-medium">
                   {importResult.inserted > 0
                     ? `${importResult.inserted} new model${importResult.inserted === 1 ? '' : 's'} imported`
-                    : 'No new models added'}
+                    : importResult.removed > 0
+                      ? 'Provider model list updated'
+                      : 'No new models added'}
                 </p>
                 {importResult.skipped > 0 && (
                   <p className="text-xs text-muted-foreground mt-1">
-                    {importResult.skipped} model{importResult.skipped === 1 ? '' : 's'} already existed and were skipped
+                    {importResult.skipped} model{importResult.skipped === 1 ? '' : 's'} already existed and were kept
+                  </p>
+                )}
+                {importResult.removed > 0 && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {importResult.removed} unselected model{importResult.removed === 1 ? '' : 's'} removed
                   </p>
                 )}
               </div>
@@ -209,34 +224,53 @@ function SyncModelsModal({
             <p className="text-sm text-muted-foreground">No models found or syncing not supported for this provider.</p>
           ) : (
             <div className="space-y-2">
+              <Input
+                placeholder="Search by name…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                autoFocus
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Importing replaces this provider's saved models — anything you don't select is removed.
+              </p>
               <div className="flex items-center justify-between mb-2 pb-2 border-b">
-                <span className="text-xs text-muted-foreground">{models?.length} models found</span>
-                <Button 
-                  variant="ghost" 
-                  size="sm" 
+                <span className="text-xs text-muted-foreground">
+                  {search.trim() ? `${filtered.length} of ${models?.length ?? 0} models` : `${models?.length ?? 0} models found`}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   className="h-7 text-xs px-2"
                   onClick={() => {
-                    if (allSelected) setSelectedIds(new Set())
-                    else setSelectedIds(new Set(models?.map(m => m.id)))
+                    setSelectedIds(prev => {
+                      const next = new Set(prev)
+                      if (allVisibleSelected) filtered.forEach(m => next.delete(m.id))
+                      else filtered.forEach(m => next.add(m.id))
+                      return next
+                    })
                   }}
                 >
-                  {allSelected ? 'Deselect All' : 'Select All'}
+                  {allVisibleSelected ? 'Deselect all' : 'Select all'}
                 </Button>
               </div>
-              {models?.map(m => (
-                <label key={m.id} className="flex items-center gap-3 p-2 rounded hover:bg-muted cursor-pointer border border-transparent hover:border-border transition-colors">
-                  <input 
-                    type="checkbox" 
-                    checked={selectedIds.has(m.id)}
-                    onChange={() => handleToggle(m.id)}
-                    className="accent-primary size-4"
-                  />
-                  <div className="flex flex-col">
-                    <span className="text-sm font-medium">{m.name}</span>
-                    <span className="text-[10px] text-muted-foreground font-mono leading-tight">{m.id}</span>
-                  </div>
-                </label>
-              ))}
+              {filtered.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-6">No models match your search.</p>
+              ) : (
+                filtered.map(m => (
+                  <label key={m.id} className="flex items-center gap-3 p-2 rounded hover:bg-muted cursor-pointer border border-transparent hover:border-border transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(m.id)}
+                      onChange={() => handleToggle(m.id)}
+                      className="accent-primary size-4"
+                    />
+                    <div className="flex flex-col">
+                      <span className="text-sm font-medium">{m.name}</span>
+                      <span className="text-[10px] text-muted-foreground font-mono leading-tight">{m.id}</span>
+                    </div>
+                  </label>
+                ))
+              )}
             </div>
           )}
         </div>
@@ -421,21 +455,34 @@ function SyncAllModelsModal({
   onClose: () => void, onImported: () => void
 }) {
   const [selected, setSelected] = useState<Record<string, Set<string>>>({})
-  const [importResult, setImportResult] = useState<{ inserted: number; skipped: number } | null>(null)
+  const [search, setSearch] = useState('')
+  const [importResult, setImportResult] = useState<{ inserted: number; skipped: number; removed: number } | null>(null)
 
   const { data: results, isLoading, error } = useQuery<{keyId: number, platform: string, models: Array<{id: string, name: string}>}[]>({
     queryKey: ['sync-models-all'],
     queryFn: () => apiFetch('/api/keys/sync/all'),
   })
 
+  const filteredResults = useMemo(() => {
+    if (!results) return []
+    const q = search.trim().toLowerCase()
+    if (!q) return results
+    return results
+      .map(r => ({
+        ...r,
+        models: r.models.filter(m => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q)),
+      }))
+      .filter(r => r.models.length > 0)
+  }, [results, search])
+
   const importMutation = useMutation({
     mutationFn: (items: {platform: string, models: Array<{id: string, name: string}>}[]) =>
-      apiFetch<{ success: boolean; inserted: number; skipped: number }>('/api/keys/sync/import-bulk', {
+      apiFetch<{ success: boolean; inserted: number; skipped: number; removed: number }>('/api/keys/sync/import-bulk', {
         method: 'POST',
         body: JSON.stringify({ items })
       }),
     onSuccess: (result) => {
-      setImportResult({ inserted: result.inserted, skipped: result.skipped })
+      setImportResult({ inserted: result.inserted, skipped: result.skipped, removed: result.removed })
       onImported()
     },
     onError: (err: Error) => {
@@ -455,11 +502,13 @@ function SyncAllModelsModal({
   const handleToggleAll = (platform: string, models: {id: string}[]) => {
     const next = { ...selected }
     const platformSet = new Set(next[platform] || [])
-    if (platformSet.size === models.length) {
-      next[platform] = new Set()
+    const allSelected = models.length > 0 && models.every(m => platformSet.has(m.id))
+    if (allSelected) {
+      models.forEach(m => platformSet.delete(m.id))
     } else {
-      next[platform] = new Set(models.map(m => m.id))
+      models.forEach(m => platformSet.add(m.id))
     }
+    next[platform] = platformSet
     setSelected(next)
   }
 
@@ -488,15 +537,22 @@ function SyncAllModelsModal({
         <div className="flex-1 overflow-auto p-4 space-y-6">
           {importResult ? (
             <div className="space-y-3">
-              <div className={`rounded-lg border p-4 ${importResult.inserted > 0 ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-muted border-border'}`}>
+              <div className={`rounded-lg border p-4 ${importResult.inserted > 0 || importResult.removed > 0 ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-muted border-border'}`}>
                 <p className="text-sm font-medium">
                   {importResult.inserted > 0
                     ? `${importResult.inserted} new model${importResult.inserted === 1 ? '' : 's'} imported`
-                    : 'No new models added'}
+                    : importResult.removed > 0
+                      ? 'Provider model list updated'
+                      : 'No new models added'}
                 </p>
                 {importResult.skipped > 0 && (
                   <p className="text-xs text-muted-foreground mt-1">
-                    {importResult.skipped} model{importResult.skipped === 1 ? '' : 's'} already existed and were skipped
+                    {importResult.skipped} model{importResult.skipped === 1 ? '' : 's'} already existed and were kept
+                  </p>
+                )}
+                {importResult.removed > 0 && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {importResult.removed} unselected model{importResult.removed === 1 ? '' : 's'} removed
                   </p>
                 )}
               </div>
@@ -512,37 +568,50 @@ function SyncAllModelsModal({
             <p className="text-sm text-muted-foreground">No new models discovered from enabled keys.</p>
           ) : (
             <div className="space-y-6">
-              {results.map(res => (
-                <div key={res.keyId} className="space-y-2">
-                  <div className="flex items-center justify-between pb-1 border-b">
-                    <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{res.platform}</span>
-                    <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      className="h-6 text-[10px] px-2"
-                      onClick={() => handleToggleAll(res.platform, res.models)}
-                    >
-                      {selected[res.platform]?.size === res.models.length ? 'Deselect Platform' : 'Select Platform'}
-                    </Button>
+              <Input
+                placeholder="Search by name…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                autoFocus
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Importing replaces each provider's saved models — anything you don't select is removed.
+              </p>
+              {filteredResults.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-6">No models match your search.</p>
+              ) : (
+                filteredResults.map(res => (
+                  <div key={res.keyId} className="space-y-2">
+                    <div className="flex items-center justify-between pb-1 border-b">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{res.platform}</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-[10px] px-2"
+                        onClick={() => handleToggleAll(res.platform, res.models)}
+                      >
+                        {res.models.every(m => selected[res.platform]?.has(m.id)) ? 'Deselect Platform' : 'Select Platform'}
+                      </Button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {res.models.map(m => (
+                        <label key={m.id} className="flex items-center gap-3 p-2 rounded hover:bg-muted cursor-pointer border border-transparent hover:border-border transition-colors">
+                          <input
+                            type="checkbox"
+                            checked={selected[res.platform]?.has(m.id) || false}
+                            onChange={() => handleToggle(res.platform, m.id)}
+                            className="accent-primary size-4"
+                          />
+                          <div className="flex flex-col overflow-hidden">
+                            <span className="text-xs font-medium truncate">{m.name}</span>
+                            <span className="text-[10px] text-muted-foreground font-mono truncate">{m.id}</span>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {res.models.map(m => (
-                      <label key={m.id} className="flex items-center gap-3 p-2 rounded hover:bg-muted cursor-pointer border border-transparent hover:border-border transition-colors">
-                        <input 
-                          type="checkbox" 
-                          checked={selected[res.platform]?.has(m.id) || false}
-                          onChange={() => handleToggle(res.platform, m.id)}
-                          className="accent-primary size-4"
-                        />
-                        <div className="flex flex-col overflow-hidden">
-                          <span className="text-xs font-medium truncate">{m.name}</span>
-                          <span className="text-[10px] text-muted-foreground font-mono truncate">{m.id}</span>
-                        </div>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           )}
         </div>
@@ -617,6 +686,15 @@ export default function KeysPage() {
     },
   })
 
+  const resetLimits = useMutation({
+    mutationFn: () => apiFetch('/api/health/reset', { method: 'POST' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['health'] })
+      queryClient.invalidateQueries({ queryKey: ['keys'] })
+      alert('Cleared cooldowns, penalties, and rate-limit counters.')
+    },
+  })
+
   const checkKey = useMutation({
     mutationFn: (keyId: number) => apiFetch(`/api/health/check/${keyId}`, { method: 'POST' }),
     onSuccess: () => {
@@ -661,6 +739,9 @@ export default function KeysPage() {
               </Button>
               <Button variant="outline" size="sm" onClick={() => checkAll.mutate()} disabled={checkAll.isPending}>
                 {checkAll.isPending ? 'Checking…' : 'Check all'}
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => resetLimits.mutate()} disabled={resetLimits.isPending}>
+                {resetLimits.isPending ? 'Resetting…' : 'Reset limits'}
               </Button>
             </div>
           )

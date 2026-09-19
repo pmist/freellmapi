@@ -35,7 +35,6 @@ describe('Proxy tool-calling support', () => {
   beforeEach(async () => {
     const db = getDb();
     db.prepare('DELETE FROM api_keys').run();
-    db.prepare('DELETE FROM requests').run();
 
     const addKey = await request(app, 'POST', '/api/keys', {
       platform: 'groq',

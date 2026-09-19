@@ -4,10 +4,8 @@ import helmet from 'helmet';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { keysRouter } from './routes/keys.js';
-import { modelsRouter } from './routes/models.js';
 import { proxyRouter } from './routes/proxy.js';
 import { fallbackRouter } from './routes/fallback.js';
-import { analyticsRouter } from './routes/analytics.js';
 import { healthRouter } from './routes/health.js';
 import { settingsRouter } from './routes/settings.js';
 import { errorHandler } from './middleware/errorHandler.js';
@@ -23,9 +21,7 @@ export function createApp() {
 
   // API routes
   app.use('/api/keys', keysRouter);
-  app.use('/api/models', modelsRouter);
   app.use('/api/fallback', fallbackRouter);
-  app.use('/api/analytics', analyticsRouter);
   app.use('/api/health', healthRouter);
   app.use('/api/settings', settingsRouter);
 

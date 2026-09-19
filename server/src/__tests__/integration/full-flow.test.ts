@@ -33,19 +33,14 @@ describe('Full Integration Flow', () => {
     // Clean
     const db = getDb();
     db.prepare('DELETE FROM api_keys').run();
-    db.prepare('DELETE FROM requests').run();
   });
 
   it('Step 1: Verify models are seeded', async () => {
-    const { status, body } = await req(app, 'GET', '/api/models');
+    const { status, body } = await req(app, 'GET', '/v1/models');
     expect(status).toBe(200);
-    expect(body.length).toBeGreaterThanOrEqual(14);
-    expect(body[0]).toHaveProperty('modelId');
-    expect(body[0]).toHaveProperty('hasProvider');
-    // All should have providers
-    for (const m of body) {
-      expect(m.hasProvider).toBe(true);
-    }
+    expect(body.object).toBe('list');
+    expect(body.data.length).toBeGreaterThanOrEqual(14);
+    expect(body.data[0]).toHaveProperty('id');
   });
 
   it('Step 2: Verify fallback chain is populated', async () => {
@@ -105,14 +100,7 @@ describe('Full Integration Flow', () => {
     vi.restoreAllMocks();
   });
 
-  it('Step 6: Error was logged in analytics', async () => {
-    const { status, body } = await req(app, 'GET', '/api/analytics/summary?range=24h');
-    expect(status).toBe(200);
-    // May or may not have logged depending on retry behavior
-    expect(body.totalRequests).toBeGreaterThanOrEqual(0);
-  });
-
-  it('Step 7: Sort fallback by speed', async () => {
+  it('Step 6: Sort fallback by speed', async () => {
     const { status } = await req(app, 'POST', '/api/fallback/sort/speed');
     expect(status).toBe(200);
 
@@ -120,14 +108,14 @@ describe('Full Integration Flow', () => {
     expect(body[0].speedRank).toBe(1);
   });
 
-  it('Step 8: Health endpoint works', async () => {
+  it('Step 7: Health endpoint works', async () => {
     const { status, body } = await req(app, 'GET', '/api/health');
     expect(status).toBe(200);
     expect(body).toHaveProperty('platforms');
     expect(body).toHaveProperty('keys');
   });
 
-  it('Step 9: Delete a key if any exist', async () => {
+  it('Step 8: Delete a key if any exist', async () => {
     // Add a fresh key to ensure we have one to delete
     await req(app, 'POST', '/api/keys', {
       platform: 'groq', key: 'gsk_delete_test', label: 'delete-test',
@@ -140,7 +128,7 @@ describe('Full Integration Flow', () => {
     expect(status).toBe(200);
   });
 
-  it('Step 10: Validate request schema', async () => {
+  it('Step 9: Validate request schema', async () => {
     const { status } = await req(app, 'POST', '/v1/chat/completions', {
       messages: [], // empty
     });

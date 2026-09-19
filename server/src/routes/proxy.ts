@@ -284,12 +284,15 @@ function getCooldownMs(err: any, isOpencode: boolean): number {
   if (isRateLimitError(err)) {
     return isOpencode ? 8 * 60 * 60 * 1000 : 120_000;
   }
-  return 30_000;
+  if (isNetworkError(err)) return 30_000;
+  const status = providerHttpStatus(err);
+  if (status !== null && status >= 500) return 30_000;
+  // Client-induced 4xx (bad request shape, unsupported parameter, etc.): try the
+  // next model for THIS request, but do not cool the model+key down.
+  return 0;
 }
 
 proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
-  const start = Date.now();
-
   // Authenticate with unified API key (skip for local requests)
   const authHeader = req.headers.authorization;
   const isLocal = req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1';
@@ -452,15 +455,14 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           if (!first.done) firstChunk = first.value;
         } catch (providerErr: any) {
           // Provider rejected before streaming started - can retry
-          const latency = Date.now() - start;
-          logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, providerErr.message);
           const isOpencode = route.platform === 'opencode';
           const shouldRetry = isOpencode || isFallbackEligible(providerErr);
           if (shouldRetry) {
             const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
             skipKeys.add(skipId);
-            setCooldown(route.platform, route.modelId, route.keyId, getCooldownMs(providerErr, isOpencode));
-            recordRateLimitHit(route.modelDbId);
+            const cooldownMs = getCooldownMs(providerErr, isOpencode);
+            if (cooldownMs > 0) setCooldown(route.platform, route.modelId, route.keyId, cooldownMs);
+            if (isRateLimitError(providerErr)) recordRateLimitHit(route.modelDbId);
             lastError = providerErr;
             console.log(`[Proxy] ${providerErr.message.slice(0, 60)} from ${route.displayName}, falling back (attempt ${attempt + 1}/${MAX_RETRIES})`);
             continue;
@@ -514,7 +516,6 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         recordTokens(route.platform, route.modelId, route.keyId, estimatedInputTokens + totalOutputTokens);
         recordSuccess(route.modelDbId);
         setStickyModel(messages, route.modelDbId);
-        logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Date.now() - start, null);
         return;
       } else {
         const result = await route.provider.chatCompletion(
@@ -534,19 +535,9 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
         if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
         res.json(result);
-
-        logRequest(
-          route.platform, route.modelId, 'success',
-          result.usage?.prompt_tokens ?? 0,
-          result.usage?.completion_tokens ?? 0,
-          Date.now() - start, null,
-        );
         return;
       }
     } catch (err: any) {
-      const latency = Date.now() - start;
-      logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message);
-
       const isOpencode = route.platform === 'opencode';
       const shouldRetry = isOpencode || isFallbackEligible(err);
 
@@ -556,9 +547,10 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         skipKeys.add(skipId);
         
         // Cooldown: long for rate-limit errors, short for everything else
-        setCooldown(route.platform, route.modelId, route.keyId, getCooldownMs(err, isOpencode));
+        const cooldownMs = getCooldownMs(err, isOpencode);
+        if (cooldownMs > 0) setCooldown(route.platform, route.modelId, route.keyId, cooldownMs);
         
-        recordRateLimitHit(route.modelDbId);
+        if (isRateLimitError(err)) recordRateLimitHit(route.modelDbId);
         lastError = err;
         console.log(`[Proxy] ${err.message.slice(0, 60)} from ${route.displayName}, falling back (attempt ${attempt + 1}/${MAX_RETRIES})`);
         continue;
@@ -587,23 +579,3 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     },
   });
 });
-
-function logRequest(
-  platform: string,
-  modelId: string,
-  status: string,
-  inputTokens: number,
-  outputTokens: number,
-  latencyMs: number,
-  error: string | null,
-) {
-  try {
-    const db = getDb();
-    db.prepare(`
-      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(platform, modelId, status, inputTokens, outputTokens, latencyMs, error);
-  } catch (e) {
-    console.error('Failed to log request:', e);
-  }
-}

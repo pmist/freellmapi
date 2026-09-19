@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import { getDb } from '../db/index.js';
 import { checkKeyHealth, checkAllKeys } from '../services/health.js';
 import { hasProvider } from '../providers/index.js';
+import { resetRuntimeState } from '../services/router.js';
 
 export const healthRouter = Router();
 
@@ -69,5 +70,11 @@ healthRouter.post('/check/:keyId', async (req: Request, res: Response) => {
 // Check all keys
 healthRouter.post('/check-all', async (_req: Request, res: Response) => {
   await checkAllKeys();
+  res.json({ success: true });
+});
+
+// Clear in-memory routing state (cooldowns, penalties, rate-limit counters)
+healthRouter.post('/reset', (_req: Request, res: Response) => {
+  resetRuntimeState();
   res.json({ success: true });
 });
