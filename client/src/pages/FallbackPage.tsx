@@ -21,6 +21,7 @@ import { apiFetch } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/page-header'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Trash2 } from 'lucide-react'
 
 // ── Types ──
@@ -66,6 +67,8 @@ interface ClearResult {
   removed: number
   group: string | null
 }
+
+type RoutingStrategy = 'priority' | 'random'
 
 interface TokenUsageData {
   totalBudget: number
@@ -467,6 +470,11 @@ export default function FallbackPage() {
     queryFn: () => apiFetch('/api/fallback/token-usage'),
   })
 
+  const { data: routingData } = useQuery<{ strategy: RoutingStrategy }>({
+    queryKey: ['routing-strategy'],
+    queryFn: () => apiFetch('/api/settings/routing'),
+  })
+
   // ── Local drag state (per group) ──
   const [localGroups, setLocalGroups] = useState<Groups | null>(null)
 
@@ -562,6 +570,22 @@ export default function FallbackPage() {
       queryClient.invalidateQueries({ queryKey: ['fallback', 'groups'] })
       queryClient.invalidateQueries({ queryKey: ['fallback', 'token-usage'] })
     },
+  })
+
+  const routingMutation = useMutation({
+    mutationFn: (strategy: RoutingStrategy) =>
+      apiFetch<{ strategy: RoutingStrategy }>('/api/settings/routing', {
+        method: 'PUT',
+        body: JSON.stringify({ strategy }),
+      }),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['routing-strategy'] })
+      setStatus({
+        kind: 'success',
+        text: `Routing set to ${result.strategy === 'random' ? 'random model' : 'priority order'}.`,
+      })
+    },
+    onError: (err) => setStatus({ kind: 'error', text: `Failed to update routing: ${(err as Error).message}` }),
   })
 
   const saveReorderMutation = useMutation({
@@ -685,18 +709,34 @@ export default function FallbackPage() {
         title="Fallback chain"
         description="Organize models into groups. Requests use the matching group's prioritized model list."
         actions={
-          totalModels > 0 ? (
-            <Button
-              variant="outline"
-              size="sm"
-              className="text-muted-foreground hover:text-destructive"
-              onClick={handleRemoveAllModels}
-              disabled={clearMutation.isPending}
+          <div className="flex items-center gap-2">
+            <Select
+              value={routingData?.strategy ?? 'random'}
+              onValueChange={(v) => {
+                if (v) routingMutation.mutate(v as RoutingStrategy)
+              }}
             >
-              <Trash2 className="size-3 mr-2" />
-              {clearMutation.isPending ? 'Removing…' : 'Remove all models'}
-            </Button>
-          ) : undefined
+              <SelectTrigger className="h-8 w-[170px] text-xs" aria-label="Routing strategy">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="random">Random model</SelectItem>
+                <SelectItem value="priority">Priority order</SelectItem>
+              </SelectContent>
+            </Select>
+            {totalModels > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-muted-foreground hover:text-destructive"
+                onClick={handleRemoveAllModels}
+                disabled={clearMutation.isPending}
+              >
+                <Trash2 className="size-3 mr-2" />
+                {clearMutation.isPending ? 'Removing…' : 'Remove all models'}
+              </Button>
+            )}
+          </div>
         }
       />
 

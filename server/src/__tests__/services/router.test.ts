@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { initDb, getDb } from '../../db/index.js';
 import { encrypt } from '../../lib/crypto.js';
-import { routeRequest } from '../../services/router.js';
+import { routeRequest, getRoutingStrategy, setRoutingStrategy } from '../../services/router.js';
 
 describe('Router', () => {
   beforeAll(() => {
@@ -18,6 +18,8 @@ describe('Router', () => {
     for (let i = 0; i < models.length; i++) {
       update.run(i + 1, models[i].id);
     }
+    // Existing tests assert priority ordering; pin the strategy for determinism.
+    setRoutingStrategy('priority');
   });
 
   it('should throw when no keys are configured', () => {
@@ -123,5 +125,46 @@ describe('Router', () => {
     expect(routeRequest().platform).toBe('google');
     // An explicit group must use that group's sequence.
     expect(routeRequest(1000, undefined, undefined, 'planning').platform).toBe('groq');
+  });
+
+  it('defaults to the random strategy when no setting is stored', () => {
+    getDb().prepare("DELETE FROM settings WHERE key = 'routing_strategy'").run();
+    expect(getRoutingStrategy()).toBe('random');
+  });
+
+  it('random strategy spreads requests across models that have keys', () => {
+    const db = getDb();
+    for (const platform of ['google', 'groq']) {
+      const k = encrypt(`${platform}-random-key`);
+      db.prepare(`
+        INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(platform, 'test', k.encrypted, k.iv, k.authTag, 'healthy', 1);
+    }
+
+    setRoutingStrategy('random');
+    const seen = new Set<string>();
+    for (let i = 0; i < 80; i++) {
+      seen.add(routeRequest().platform);
+    }
+    expect(seen.has('google')).toBe(true);
+    expect(seen.has('groq')).toBe(true);
+  });
+
+  it('random strategy still honors an explicitly preferred model', () => {
+    const db = getDb();
+    for (const platform of ['google', 'groq']) {
+      const k = encrypt(`${platform}-preferred-key`);
+      db.prepare(`
+        INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(platform, 'test', k.encrypted, k.iv, k.authTag, 'healthy', 1);
+    }
+    const google = db.prepare("SELECT id FROM models WHERE platform = 'google' AND enabled = 1 ORDER BY intelligence_rank LIMIT 1").get() as { id: number };
+
+    setRoutingStrategy('random');
+    for (let i = 0; i < 10; i++) {
+      expect(routeRequest(1000, undefined, google.id).platform).toBe('google');
+    }
   });
 });

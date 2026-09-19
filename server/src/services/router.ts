@@ -44,6 +44,41 @@ export interface RouteResult {
 // Round-robin index per platform
 const roundRobinIndex = new Map<string, number>();
 
+export type RoutingStrategy = 'priority' | 'random';
+
+const ROUTING_STRATEGY_KEY = 'routing_strategy';
+
+/**
+ * How the router orders the eligible models for a request.
+ *  - 'priority': walk the configured priority order, demoting models by their
+ *    accumulated 429 penalty.
+ *  - 'random': shuffle the eligible models so load is spread across the whole
+ *    list instead of always hammering the top-priority model first. Models
+ *    currently carrying a rate-limit penalty are still placed last.
+ */
+export function getRoutingStrategy(): RoutingStrategy {
+  const row = getDb()
+    .prepare('SELECT value FROM settings WHERE key = ?')
+    .get(ROUTING_STRATEGY_KEY) as { value: string } | undefined;
+  return row?.value === 'priority' ? 'priority' : 'random';
+}
+
+export function setRoutingStrategy(strategy: RoutingStrategy): void {
+  getDb()
+    .prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)')
+    .run(ROUTING_STRATEGY_KEY, strategy);
+}
+
+/** Fisher–Yates shuffle (returns a new array; does not mutate the input). */
+function shuffle<T>(arr: T[]): T[] {
+  const out = [...arr];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
 // ── Dynamic priority: track 429s per model and demote accordingly ──
 // Key: model_db_id → { count, lastHit, penalty }
 const rateLimitPenalties = new Map<number, { count: number; lastHit: number; penalty: number }>();
@@ -172,16 +207,27 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
     effectivePriority: entry.priority + getPenalty(entry.model_db_id),
   })).sort((a, b) => a.effectivePriority - b.effectivePriority);
 
-  // Sticky session: move preferred model to front of chain
+  // Order the eligible chain according to the configured routing strategy.
+  // 'random' spreads requests across the whole list (so a single flaky or
+  // rate-limited model no longer absorbs every request); models that are not
+  // currently penalized are still tried before penalized ones.
+  let orderedChain = sortedChain;
+  if (getRoutingStrategy() === 'random') {
+    const healthy = sortedChain.filter(e => getPenalty(e.model_db_id) === 0);
+    const penalized = sortedChain.filter(e => getPenalty(e.model_db_id) > 0);
+    orderedChain = [...shuffle(healthy), ...shuffle(penalized)];
+  }
+
+  // Sticky session / explicitly requested model: always try it first.
   if (preferredModelDbId) {
-    const idx = sortedChain.findIndex(e => e.model_db_id === preferredModelDbId);
+    const idx = orderedChain.findIndex(e => e.model_db_id === preferredModelDbId);
     if (idx > 0) {
-      const [preferred] = sortedChain.splice(idx, 1);
-      sortedChain.unshift(preferred);
+      const [preferred] = orderedChain.splice(idx, 1);
+      orderedChain.unshift(preferred);
     }
   }
 
-  for (const entry of sortedChain) {
+  for (const entry of orderedChain) {
     if (!entry.enabled) continue;
 
     // Get model details
